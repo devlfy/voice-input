@@ -3,7 +3,7 @@
 
 使い方:
   1. サーバー側: voice-input serve ws
-  2. Mac側:     python3 mac_client.py --server ws://192.168.12.50:8991
+  2. Mac側:     python3 mac_client.py --server ws://YOUR_SERVER_IP:8991
 
 操作:
   右Option(Alt)キーを押し続ける → 録音
@@ -626,14 +626,14 @@ Setup (Mac):
   #   Privacy & Security > Accessibility > Terminal
 
 Usage:
-  python3 mac_client.py --server ws://192.168.12.50:8991
-  python3 mac_client.py --server ws://192.168.1.x:8991 --language en
+  python3 mac_client.py --server ws://YOUR_SERVER_IP:8991
+  python3 mac_client.py --server ws://your-gpu-server:8991 --language en
         """,
     )
     parser.add_argument(
         "-s", "--server",
-        default="ws://192.168.12.50:8991",
-        help="WebSocket server URL (default: ws://192.168.12.50:8991)",
+        default="ws://localhost:8991",
+        help="WebSocket server URL (default: ws://localhost:8991)",
     )
     parser.add_argument("-l", "--language", default="ja", help="Language (default: ja)")
     parser.add_argument("-m", "--model", default="gpt-oss:20b", help="Ollama model")

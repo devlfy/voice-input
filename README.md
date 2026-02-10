@@ -110,7 +110,7 @@ Grant these permissions in System Settings > Privacy & Security:
 ```
 python3 mac_client.py [options]
 
-  -s, --server URL      WebSocket server (default: ws://192.168.12.50:8991)
+  -s, --server URL      WebSocket server (default: ws://YOUR_SERVER_IP:8991)
   -l, --language CODE   Language hint for Whisper (default: ja)
   -m, --model NAME      Ollama model for refinement (default: gpt-oss:20b)
   --raw                 Skip LLM refinement, Whisper output only
@@ -258,7 +258,7 @@ Server → Client: {"type": "result", ...}
 
 ```bash
 export VISION_MODEL=qwen3-vl:8b
-export VISION_SERVERS=http://192.168.1.100:11434,http://192.168.1.101:11434
+export VISION_SERVERS=http://gpu-server-1:11434,http://gpu-server-2:11434
 python ws_server.py
 ```
 
