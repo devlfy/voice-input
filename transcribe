@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# faster-whisper CLI wrapper
+# Usage: transcribe <audio_file> [options]
+# Options:
+#   -m, --model    Model size (default: large-v3-turbo)
+#   -l, --language Language code (default: auto-detect)
+#   -o, --output   Output format: text|srt|vtt|json (default: text)
+#   -d, --device   Device: cuda|cpu (default: cuda)
+#   --list-models  List available models
+
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VENV="${SCRIPT_DIR}/.venv"
+SITE="${VENV}/lib/python3.13/site-packages"
+export LD_LIBRARY_PATH="${SITE}/nvidia/cublas/lib:${SITE}/nvidia/cudnn/lib:${LD_LIBRARY_PATH:-}"
+
+exec "${VENV}/bin/python" "${SCRIPT_DIR}/transcribe.py" "$@"

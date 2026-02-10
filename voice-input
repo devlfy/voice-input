@@ -1,0 +1,6 @@
+#!/bin/bash
+DIR="$(dirname "$(readlink -f "$0")")"
+VENV="$DIR/.venv"
+SITE="$VENV/lib/python3.13/site-packages"
+export LD_LIBRARY_PATH="$SITE/nvidia/cublas/lib:$SITE/nvidia/cudnn/lib:${LD_LIBRARY_PATH:-}"
+exec "$VENV/bin/python" "$DIR/voice_input.py" "$@"
