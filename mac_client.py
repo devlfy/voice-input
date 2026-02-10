@@ -45,7 +45,8 @@ HOTKEY = keyboard.Key.alt_l  # 左Optionキー
 STREAM_INTERVAL = 2.0  # ストリーミングチャンク送信間隔（秒）
 
 # --- ステータスオーバーレイ（フローティングHUD） ---
-# macOS標準Python 3.9のPyObjC (AppKit) でカーソル付近にフローティングHUDを表示
+# macOS PyObjC (AppKit) で画面下部にワイドなフローティングHUDを表示
+# 電光掲示板スタイル: partialテキストが次々に流れ込む
 # AppKitが無い環境ではosascript通知にフォールバック
 OVERLAY_SCRIPT = r'''
 import sys, threading, queue, time
@@ -60,6 +61,9 @@ TEXTS = {
     "done":         "\u2705 Done!",
     "error":        "\u274c Error",
 }
+
+# 表示テキストの最大文字数（超過分は先頭をカットして最新部分を表示）
+MAX_DISPLAY_CHARS = 200
 
 try:
     from AppKit import (
@@ -92,10 +96,11 @@ if not HAS_APPKIT:
             prev = stage
     sys.exit(0)
 
-# ---- PyObjC Floating HUD ----
+# ---- PyObjC Floating HUD (画面下部バー) ----
 _cmd_queue = queue.Queue()
 _hud_window = None
 _hud_label = None
+_hud_bg = None
 _hud_visible = False
 _hide_at = 0
 
@@ -109,9 +114,9 @@ def _stdin_reader():
 class _RoundedBG(NSView):
     """角丸の半透明ダーク背景."""
     def drawRect_(self, rect):
-        NSColor.colorWithCalibratedRed_green_blue_alpha_(0.10, 0.10, 0.12, 0.92).set()
+        NSColor.colorWithCalibratedRed_green_blue_alpha_(0.10, 0.10, 0.12, 0.88).set()
         NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-            self.bounds(), 10, 10,
+            self.bounds(), 12, 12,
         ).fill()
 
 class _Poller(NSObject):
@@ -146,18 +151,16 @@ class _Poller(NSObject):
             pass
 
 def _show_hud(text):
-    """マウスカーソル付近にHUDを表示."""
+    """画面下部中央にHUDを表示（電光掲示板スタイル）."""
     global _hud_visible
-    mouse = NSEvent.mouseLocation()
+    # 長文は末尾（最新部分）のみ表示
+    if len(text) > MAX_DISPLAY_CHARS:
+        text = "\u2026 " + text[-MAX_DISPLAY_CHARS:]
     scr = NSScreen.mainScreen().frame()
-    w, h = 250, 36
-    x = mouse.x + 16
-    y = mouse.y - h - 16
-    # 画面端に収まるよう補正
-    if x + w > scr.origin.x + scr.size.width:
-        x = mouse.x - w - 16
-    if y < scr.origin.y:
-        y = mouse.y + 20
+    w = _hud_window.frame().size.width
+    h = _hud_window.frame().size.height
+    x = scr.origin.x + (scr.size.width - w) / 2
+    y = scr.origin.y + 24
     _hud_window.setFrameOrigin_((x, y))
     _hud_label.setStringValue_(text)
     if not _hud_visible:
@@ -165,13 +168,18 @@ def _show_hud(text):
         _hud_visible = True
 
 def main():
-    global _hud_window, _hud_label
+    global _hud_window, _hud_label, _hud_bg
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(2)  # Prohibited: Dockアイコン非表示
 
-    W, H = 250, 36
+    scr = NSScreen.mainScreen().frame()
+    W = min(int(scr.size.width * 0.6), 900)
+    H = 64
+    x = scr.origin.x + (scr.size.width - W) / 2
+    y = scr.origin.y + 24
+
     _hud_window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-        NSMakeRect(0, 0, W, H), 0, NSBackingStoreBuffered, False,
+        NSMakeRect(x, y, W, H), 0, NSBackingStoreBuffered, False,
     )
     _hud_window.setLevel_(25)  # kCGPopUpMenuWindowLevel
     _hud_window.setOpaque_(False)
@@ -179,16 +187,19 @@ def main():
     _hud_window.setIgnoresMouseEvents_(True)
     _hud_window.setHasShadow_(True)
 
-    bg = _RoundedBG.alloc().initWithFrame_(NSMakeRect(0, 0, W, H))
-    _hud_window.setContentView_(bg)
+    _hud_bg = _RoundedBG.alloc().initWithFrame_(NSMakeRect(0, 0, W, H))
+    _hud_window.setContentView_(_hud_bg)
 
-    _hud_label = NSTextField.alloc().initWithFrame_(NSMakeRect(12, 6, W - 24, H - 12))
+    _hud_label = NSTextField.alloc().initWithFrame_(NSMakeRect(16, 8, W - 32, H - 16))
     _hud_label.setEditable_(False)
     _hud_label.setBezeled_(False)
     _hud_label.setDrawsBackground_(False)
     _hud_label.setTextColor_(NSColor.whiteColor())
-    _hud_label.setFont_(NSFont.boldSystemFontOfSize_(13))
-    bg.addSubview_(_hud_label)
+    _hud_label.setFont_(NSFont.systemFontOfSize_(14))
+    _hud_label.setMaximumNumberOfLines_(3)
+    _hud_label.cell().setWraps_(True)
+    _hud_label.cell().setLineBreakMode_(0)  # NSLineBreakByWordWrapping
+    _hud_bg.addSubview_(_hud_label)
 
     threading.Thread(target=_stdin_reader, daemon=True).start()
     poller = _Poller.alloc().init()
@@ -312,14 +323,13 @@ class VoiceInputClient:
                 self._update_overlay("refining")
 
         elif msg_type == "partial":
-            # Whisper生テキスト（LLM整形前）を即座に表示
+            # Whisper生テキスト（LLM整形前）を即座にHUDに流す
             raw = data.get("text", "")
             t_trans = data.get("transcribe_time", 0)
             if raw:
-                preview = raw[:40] + ("..." if len(raw) > 40 else "")
-                print(f" ({t_trans:.1f}s)")
-                print(f"  ≈ {preview}", end="", flush=True)
-                self._update_overlay("partial", preview)
+                preview = raw[:60] + ("..." if len(raw) > 60 else "")
+                print(f"\r  \u2248 {preview}  ({t_trans:.1f}s)", end="", flush=True)
+                self._update_overlay("partial", raw)
 
         elif msg_type == "result":
             text = data.get("text", "")
@@ -328,8 +338,8 @@ class VoiceInputClient:
             t_ref = data.get("refine_time", 0)
             dur = data.get("duration", 0)
 
-            print(f" Done ({t_trans + t_ref:.1f}s)")
-            self._update_overlay("done", f"\u2713 {t_trans + t_ref:.1f}s")
+            print(f"\n  Done ({t_trans + t_ref:.1f}s)")
+            self._update_overlay("done", f"\u2713 {text[:100] if text else '(empty)'}")
 
             if text:
                 self._output_text(text)
