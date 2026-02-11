@@ -512,24 +512,47 @@ class VoiceInputClient:
 
     @staticmethod
     def _capture_screenshot():
-        """macOS screencaptureでスクリーンショットを取得しbase64で返す."""
+        """macOS screencaptureでスクリーンショットを取得しbase64で返す.
+
+        キーボードフォーカスのあるディスプレイのみキャプチャ。
+        マルチモニタ環境で全画面取得を防止し、ビジョン処理を高速化する。
+        """
         import base64
         import tempfile
         import os
 
         tmp_path = tempfile.mktemp(suffix=".png")
         try:
+            # キーボードフォーカスのあるスクリーンの領域を特定
+            capture_args = ["screencapture", "-x", "-C"]
+            try:
+                from AppKit import NSScreen
+                focused = NSScreen.mainScreen()  # キーボードフォーカスのあるスクリーン
+                if focused and len(NSScreen.screens()) > 1:
+                    frame = focused.frame()
+                    primary = NSScreen.screens()[0]
+                    primary_h = primary.frame().size.height
+                    # NSScreen座標（左下原点）→ screencapture座標（左上原点）に変換
+                    x = int(frame.origin.x)
+                    y = int(primary_h - frame.origin.y - frame.size.height)
+                    w = int(frame.size.width)
+                    h = int(frame.size.height)
+                    capture_args.extend(["-R", f"{x},{y},{w},{h}"])
+            except ImportError:
+                capture_args.extend(["-D", "1"])
+
+            capture_args.append(tmp_path)
             result = subprocess.run(
-                ["screencapture", "-x", "-C", tmp_path],
+                capture_args,
                 capture_output=True, timeout=3,
             )
             if result.returncode != 0 or not os.path.exists(tmp_path):
                 return None
 
-            # リサイズ（VRAM節約 + 転送高速化: 最大幅1280px）
+            # リサイズ（VRAM節約 + 転送高速化: 最大幅900px）
             try:
                 subprocess.run(
-                    ["sips", "--resampleWidth", "1280", tmp_path],
+                    ["sips", "--resampleWidth", "900", tmp_path],
                     capture_output=True, timeout=5,
                 )
             except Exception:

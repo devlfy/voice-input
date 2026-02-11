@@ -178,6 +178,11 @@ async def handle_stream_start(websocket, client_id: str, data: dict):
     state.processing = False
     state.has_newer = False
 
+    # 前回のvisionタスクが残っていればキャンセル
+    if state.vision_task and not state.vision_task.done():
+        state.vision_task.cancel()
+        log.info(f"Cancelled previous vision task for {client_id}")
+
     # Vision分析
     screenshot_b64 = data.get("screenshot", "")
     cfg = client_configs.get(client_id, {})
@@ -330,11 +335,12 @@ async def handle_stream_end(websocket, client_id: str):
                 if len(context_hint) > MAX_CONTEXT_LEN:
                     context_hint = context_hint[:MAX_CONTEXT_LEN] + "..."
                 preview = context_hint.replace("\n", " ")[:80]
-                log.info(f"Vision ready: {analysis_time:.1f}s → {preview}")
+                log.info(f"Vision ready ({analysis_time:.1f}s): {preview}")
             except Exception as e:
                 log.error(f"Vision error: {e}")
         else:
-            log.info("Vision not ready yet, proceeding without context")
+            elapsed = time.time() - state.vision_start if state.vision_start else 0
+            log.info(f"Vision not ready ({elapsed:.0f}s elapsed), proceeding without context")
 
     # LLM整形
     refined_text = raw_text
@@ -417,6 +423,7 @@ async def handle_audio(websocket, client_id: str, audio_data: bytes,
                         context_hint = context_hint[:MAX_CONTEXT_LEN] + "..."
                     preview = context_hint.replace("\n", " ")[:80]
                     log.info(f"Vision ready: {analysis_time:.1f}s → {preview}")
+                    log.info(f"Vision full context ({len(context_hint)} chars):\n{context_hint}")
                 except Exception as e:
                     log.error(f"Vision error: {e}")
             else:

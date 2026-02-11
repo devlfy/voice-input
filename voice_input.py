@@ -130,11 +130,16 @@ def analyze_screenshot(screenshot_b64: str, vision_model: str = VISION_MODEL) ->
 
     VISION_SERVERS で指定されたサーバーに順番に試行。
     ローカルOllamaの場合は keep_alive=0 でVRAMを即解放する。
+    think:false が無視されるモデル向けに thinking フィールドもフォールバック取得。
     """
+    import logging
     import requests
+
+    log = logging.getLogger("voice_input.vision")
 
     t0 = time.time()
     is_local = len(VISION_SERVERS) == 1 and VISION_SERVERS[0] == OLLAMA_URL
+
     payload = {
         "model": vision_model,
         "messages": [
@@ -145,7 +150,8 @@ def analyze_screenshot(screenshot_b64: str, vision_model: str = VISION_MODEL) ->
             },
         ],
         "stream": False,
-        "options": {"temperature": 0.1, "num_predict": 512, "num_ctx": 4096},
+        "think": False,
+        "options": {"temperature": 0.1, "num_predict": 256, "num_ctx": 4096},
     }
     if is_local:
         payload["keep_alive"] = "0"
@@ -154,16 +160,29 @@ def analyze_screenshot(screenshot_b64: str, vision_model: str = VISION_MODEL) ->
     for server_url in VISION_SERVERS:
         try:
             resp = requests.post(
-                f"{server_url}/api/chat", json=payload, timeout=60,
+                f"{server_url}/api/chat", json=payload, timeout=120,
             )
             resp.raise_for_status()
             data = resp.json()
+
+            msg = data.get("message", {})
+            content = msg.get("content", "")
+            thinking = msg.get("thinking", "")
+
             analysis_time = time.time() - t0
+            # think:false が無視される場合、thinking をフォールバックとして使用
+            analysis = content if content.strip() else thinking
+            log.info(f"Vision done in {analysis_time:.1f}s "
+                     f"({len(analysis)} chars from "
+                     f"{'content' if content.strip() else 'thinking'})")
             return {
-                "analysis": data["message"]["content"],
+                "analysis": analysis,
                 "analysis_time": analysis_time,
             }
         except Exception as e:
+            elapsed = time.time() - t0
+            log.error(f"Vision server {server_url} failed ({elapsed:.1f}s): "
+                      f"{type(e).__name__}: {e}")
             last_err = e
             continue
 
