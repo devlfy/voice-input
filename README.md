@@ -51,11 +51,12 @@ python3 -m venv .venv
 ollama pull gpt-oss:20b    # Text refinement (or any model you prefer)
 ollama pull qwen3-vl:8b-instruct  # Screenshot analysis (if running vision locally)
 
-# Start WebSocket server
-python ws_server.py
-# or via voice-input CLI:
-./voice-input serve ws
+# Start WebSocket server (LD_LIBRARY_PATH required for pip-installed CUDA libs)
+LD_LIBRARY_PATH=".venv/lib/$(python3 -c 'import sys;print(f"python{sys.version_info.major}.{sys.version_info.minor}")')/site-packages/nvidia/cublas/lib:.venv/lib/$(python3 -c 'import sys;print(f"python{sys.version_info.major}.{sys.version_info.minor}")')/site-packages/nvidia/cudnn/lib" \
+  .venv/bin/python ws_server.py
 ```
+
+> **CUDA note:** When NVIDIA libraries (cublas, cudnn) are installed via pip into the venv, they are not on the default library search path. You must set `LD_LIBRARY_PATH` to include the venv's `nvidia/*/lib` directories, or Whisper will fail with `Library libcublas.so.12 is not found`. The path includes the Python version directory (e.g., `python3.13`), so use the shell snippet above to auto-detect it.
 
 > **VRAM note:** Whisper (~3 GB) stays loaded. gpt-oss (~12 GB) loads on demand. For best performance, run the vision model on a separate GPU server via `VISION_SERVERS` to avoid model swapping.
 
@@ -325,6 +326,21 @@ python ws_server.py
 - **Vision** runs on local Ollama by default. Set `VISION_SERVERS` to offload to separate GPU(s) and avoid model swapping. Uses an active-tab-focused prompt to maximize text extraction from the focused window
 - Screenshots are captured at full resolution (no resize) for best OCR accuracy. Analysis runs in parallel with recording; if not ready when refinement starts, proceeds without context
 - VAD (Voice Activity Detection) is disabled for streaming chunks but enabled for final transcription
+
+## Troubleshooting
+
+### `Library libcublas.so.12 is not found or cannot be loaded`
+
+This happens when NVIDIA CUDA libraries installed via pip (nvidia-cublas-cu12, nvidia-cudnn-cu12) are not on the library search path. Set `LD_LIBRARY_PATH` to include the venv's nvidia lib directories:
+
+```bash
+# Auto-detect Python version in venv
+PYVER=$(.venv/bin/python -c 'import sys;print(f"python{sys.version_info.major}.{sys.version_info.minor}")')
+export LD_LIBRARY_PATH=".venv/lib/$PYVER/site-packages/nvidia/cublas/lib:.venv/lib/$PYVER/site-packages/nvidia/cudnn/lib"
+.venv/bin/python ws_server.py
+```
+
+This is required because pip installs CUDA libraries under `.venv/lib/pythonX.Y/site-packages/nvidia/*/lib/` which is not a standard library search path. The exact directory name changes with the Python version (e.g., `python3.13`, `python3.12`).
 
 ## Why?
 
