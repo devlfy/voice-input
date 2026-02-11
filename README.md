@@ -12,7 +12,7 @@ Local voice input with screen-aware context. Push-to-talk on Mac, transcribed by
 - **LLM text refinement** — Removes filler words, adds punctuation, formats lists as bullet points, and fixes recognition errors
 - **Multi-language support** — Language-specific prompts for Japanese, English, Chinese, and Korean (auto-detected or configurable)
 - **Floating HUD** — macOS cursor-following status overlay showing recording/transcribing/refining state
-- **Auto-paste** — Result automatically copied to clipboard and pasted via Cmd+V
+- **Auto-paste + Enter** — Result pasted via Cmd+V and Enter sent automatically. Hold Ctrl during recording to paste without Enter
 
 ## How it works
 
