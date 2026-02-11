@@ -35,6 +35,8 @@ import websockets
 from voice_input import (
     transcribe,
     refine_with_llm,
+    detect_slash_prefix,
+    match_slash_command,
     analyze_screenshot,
     DEFAULT_MODEL,
     VISION_MODEL,
@@ -113,8 +115,13 @@ async def handle_client(websocket):
                             cfg[key] = data[key]
                     if "raw" in data:
                         cfg["raw"] = bool(data["raw"])
-                    await send_json(websocket, {"type": "config_ack", **cfg})
-                    log.info(f"Config updated for {client_id}: {cfg}")
+                    if "slash_commands" in data:
+                        cfg["slash_commands"] = data["slash_commands"]
+                        log.info(f"Loaded {len(data['slash_commands'])} slash commands for {client_id}")
+                    # config_ackにはslash_commandsを含めない（大きいため）
+                    ack = {k: v for k, v in cfg.items() if k != "slash_commands"}
+                    await send_json(websocket, {"type": "config_ack", **ack})
+                    log.info(f"Config updated for {client_id}: {ack}")
 
                 elif msg_type == "stream_start":
                     await handle_stream_start(websocket, client_id, data)
@@ -357,6 +364,47 @@ async def handle_stream_end(websocket, client_id: str):
             elapsed = time.time() - state.vision_start if state.vision_start else 0
             log.info(f"Vision not ready ({elapsed:.0f}s elapsed), proceeding without context")
 
+    # スラッシュコマンド検出
+    slash_commands = cfg.get("slash_commands", [])
+    if slash_commands and raw_text.strip():
+        is_slash, remaining = detect_slash_prefix(raw_text)
+        if is_slash and remaining:
+            log.info(f"Slash command detected: '{remaining}'")
+            await send_json(websocket, {"type": "status", "stage": "matching_command"})
+            loop = asyncio.get_event_loop()
+            t0 = time.time()
+            try:
+                match_result = await loop.run_in_executor(
+                    None,
+                    lambda: match_slash_command(
+                        remaining,
+                        slash_commands,
+                        model=cfg.get("model", DEFAULT_MODEL),
+                        language=detected_lang,
+                    ),
+                )
+                match_time = time.time() - t0
+                if match_result["matched"]:
+                    log.info(f"Matched command in {match_time:.1f}s: "
+                             f"{match_result['command']}")
+                    await send_json(websocket, {
+                        "type": "result",
+                        "text": match_result["command"],
+                        "raw_text": raw_text,
+                        "slash_command": True,
+                        "duration": duration,
+                        "transcribe_time": round(transcribe_time, 2),
+                        "analysis_time": round(analysis_time, 2),
+                        "refine_time": round(match_time, 2),
+                        "context": "",
+                    })
+                    return
+                else:
+                    log.info(f"No command match for: '{remaining}', "
+                             f"falling through to normal refinement")
+            except Exception as e:
+                log.error(f"Slash command match error: {e}")
+
     # LLM整形
     refined_text = raw_text
     refine_time = 0
@@ -464,8 +512,48 @@ async def handle_audio(websocket, client_id: str, audio_data: bytes,
             "transcribe_time": round(transcribe_time, 2),
         })
 
-        # LLM整形
+        # スラッシュコマンド検出
         detected_lang = whisper_result.get("language", cfg.get("language", "ja"))
+        slash_commands = cfg.get("slash_commands", [])
+        if slash_commands and raw_text.strip():
+            is_slash, remaining = detect_slash_prefix(raw_text)
+            if is_slash and remaining:
+                log.info(f"[legacy] Slash command detected: '{remaining}'")
+                await send_json(websocket, {"type": "status", "stage": "matching_command"})
+                t0 = time.time()
+                try:
+                    match_result = await loop.run_in_executor(
+                        None,
+                        lambda: match_slash_command(
+                            remaining,
+                            slash_commands,
+                            model=cfg.get("model", DEFAULT_MODEL),
+                            language=detected_lang,
+                        ),
+                    )
+                    match_time = time.time() - t0
+                    if match_result["matched"]:
+                        log.info(f"[legacy] Matched command in {match_time:.1f}s: "
+                                 f"{match_result['command']}")
+                        await send_json(websocket, {
+                            "type": "result",
+                            "text": match_result["command"],
+                            "raw_text": raw_text,
+                            "slash_command": True,
+                            "language": whisper_result.get("language", ""),
+                            "duration": whisper_result.get("duration", 0),
+                            "transcribe_time": round(transcribe_time, 2),
+                            "analysis_time": round(analysis_time, 2),
+                            "refine_time": round(match_time, 2),
+                            "context": "",
+                        })
+                        return
+                    else:
+                        log.info(f"[legacy] No command match for: '{remaining}'")
+                except Exception as e:
+                    log.error(f"[legacy] Slash command match error: {e}")
+
+        # LLM整形
         refined_text = raw_text
         refine_time = 0
         if not cfg.get("raw", False):

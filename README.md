@@ -13,6 +13,7 @@ Local voice input with screen-aware context. Push-to-talk on Mac, transcribed by
 - **Multi-language support** — Language-specific prompts for Japanese, English, Chinese, and Korean (auto-detected or configurable)
 - **Floating HUD** — macOS cursor-following status overlay showing recording/transcribing/refining state. Background turns **green** when vision analysis completes during recording, so you know screen context will be used
 - **Auto-paste + Enter** — Result pasted via Cmd+V and Enter sent automatically. Hold Ctrl during recording to paste without Enter
+- **Voice slash commands** — Say "スラッシュ ヘルプ" or "slash help" to input `/help` directly. Commands auto-loaded from `~/.claude/skills/` at startup. Pasted without Enter so you can review before submitting
 
 ## How it works
 
@@ -159,6 +160,21 @@ The HUD automatically resets to dark at the start of each new recording.
 - **Claude Code / chat apps:** Use the default Alt mode — text is pasted and Enter is sent automatically, submitting your message instantly
 - **Text editors / documents:** Hold Alt + Ctrl — text is pasted without pressing Enter, so you can review before submitting
 - **Dictation in any language:** The system auto-detects the language from your speech. You can also set a language hint with `--language en` for better accuracy
+
+### Voice slash commands
+
+Say "スラッシュ" (or "slash") followed by a command name to input a slash command instead of dictated text. The LLM matches your spoken words to the closest available command.
+
+**Examples:**
+- 「スラッシュ ヘルプ」→ `/help`
+- 「スラッシュ コミット」→ `/commit`
+- 「スラッシュ イシュートゥーピーアール 123」→ `/issue-to-pr 123`
+- 「スラッシュ ピーディーエフ」→ `/pdf`
+- 「slash compact」→ `/compact`
+
+Commands are auto-loaded from `~/.claude/skills/*/SKILL.md` at client startup, plus built-in Claude Code commands (/help, /clear, /compact, /cost, /doctor, /init, /fast). Slash commands are always pasted without Enter so you can review before submitting.
+
+If no command matches, the system falls back to normal text refinement.
 
 ### Client options
 

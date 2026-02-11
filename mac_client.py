@@ -52,14 +52,15 @@ OVERLAY_SCRIPT = r'''
 import sys, threading, queue, time
 
 TEXTS = {
-    "recording":    "\U0001f3a4 Recording...",
-    "screenshot":   "\U0001f4f7 Capturing...",
-    "analyzing":    "\U0001f50d Analyzing...",
-    "transcribing": "\u270d\ufe0f Transcribing...",
-    "partial":      "\u270d\ufe0f ",
-    "refining":     "\U0001f4ad Refining...",
-    "done":         "\u2705 Done!",
-    "error":        "\u274c Error",
+    "recording":         "\U0001f3a4 Recording...",
+    "screenshot":        "\U0001f4f7 Capturing...",
+    "analyzing":         "\U0001f50d Analyzing...",
+    "transcribing":      "\u270d\ufe0f Transcribing...",
+    "partial":           "\u270d\ufe0f ",
+    "refining":          "\U0001f4ad Refining...",
+    "matching_command":  "\u2318 Matching command...",
+    "done":              "\u2705 Done!",
+    "error":             "\u274c Error",
 }
 
 # 表示テキストの最大文字数（超過分は先頭をカットして最新部分を表示）
@@ -309,14 +310,16 @@ class VoiceInputClient:
                     self._connected = True
                     print(f"  ✓ Connected to {self.server_url}")
 
-                    # 設定送信
-                    await ws.send(json.dumps({
+                    # 設定送信（スラッシュコマンド一覧を含む）
+                    config_msg = {
                         "type": "config",
                         "language": self.language,
                         "model": self.model,
                         "raw": self.raw,
                         "prompt": self.prompt,
-                    }))
+                        "slash_commands": self._scan_slash_commands(),
+                    }
+                    await ws.send(json.dumps(config_msg))
 
                     # サーバーからのメッセージを受信し続ける
                     async for msg in ws:
@@ -347,6 +350,9 @@ class VoiceInputClient:
             elif stage == "refining":
                 print(" → Refining...", end="", flush=True)
                 self._update_overlay("refining")
+            elif stage == "matching_command":
+                print(" → Matching command...", end="", flush=True)
+                self._update_overlay("matching_command")
 
         elif msg_type == "partial":
             # Whisper生テキスト（LLM整形前）を即座にHUDに流す
@@ -363,14 +369,24 @@ class VoiceInputClient:
             t_trans = data.get("transcribe_time", 0)
             t_ref = data.get("refine_time", 0)
             dur = data.get("duration", 0)
+            is_slash = data.get("slash_command", False)
 
-            enter_label = "+Enter" if self._send_enter else ""
-            print(f"\n  Done ({t_trans + t_ref:.1f}s){' ' + enter_label if enter_label else ''}")
+            # スラッシュコマンドはEnter送信しない（確認用）
+            send_enter = False if is_slash else self._send_enter
+
+            if is_slash:
+                print(f"\n  ⌘ Command ({t_ref:.1f}s)")
+            else:
+                enter_label = "+Enter" if send_enter else ""
+                print(f"\n  Done ({t_trans + t_ref:.1f}s){' ' + enter_label if enter_label else ''}")
             self._update_overlay("done")
 
             if text:
-                self._output_text(text, send_enter=self._send_enter)
-                print(f"  → [{dur:.1f}s audio] {text[:80]}{'...' if len(text) > 80 else ''}")
+                self._output_text(text, send_enter=send_enter)
+                if is_slash:
+                    print(f"  → {text}")
+                else:
+                    print(f"  → [{dur:.1f}s audio] {text[:80]}{'...' if len(text) > 80 else ''}")
             else:
                 print("  → (empty - no speech detected)")
 
@@ -552,6 +568,58 @@ class VoiceInputClient:
         else:
             print(" ✗ Not connected")
             self._update_overlay("error", "\u2717 Not connected")
+
+    @staticmethod
+    def _scan_slash_commands() -> list[dict]:
+        """~/.claude/skills/ からスラッシュコマンド一覧を収集."""
+        from pathlib import Path
+
+        # Claude Code ビルトインコマンド
+        commands = [
+            {"name": "help", "description": "Show help information", "args": ""},
+            {"name": "clear", "description": "Clear conversation history", "args": ""},
+            {"name": "compact", "description": "Compact conversation context", "args": "[instructions]"},
+            {"name": "cost", "description": "Show token usage and cost", "args": ""},
+            {"name": "doctor", "description": "Check Claude Code setup", "args": ""},
+            {"name": "init", "description": "Initialize project CLAUDE.md", "args": ""},
+            {"name": "login", "description": "Login to Anthropic", "args": ""},
+            {"name": "logout", "description": "Logout from Anthropic", "args": ""},
+            {"name": "fast", "description": "Toggle fast mode", "args": ""},
+        ]
+
+        skills_dir = Path.home() / ".claude" / "skills"
+        if not skills_dir.is_dir():
+            return commands
+
+        for skill_dir in sorted(skills_dir.iterdir()):
+            skill_file = skill_dir / "SKILL.md"
+            if not skill_file.is_file():
+                continue
+            try:
+                text = skill_file.read_text(encoding="utf-8")
+                if not text.startswith("---"):
+                    continue
+                # YAMLフロントマターをパース（---で囲まれた部分）
+                end_idx = text.index("---", 3)
+                frontmatter = text[3:end_idx].strip()
+                meta = {}
+                for line in frontmatter.split("\n"):
+                    if ":" in line:
+                        key, _, val = line.partition(":")
+                        key = key.strip()
+                        val = val.strip().strip('"').strip("'")
+                        if key in ("name", "description", "argument-hint"):
+                            meta[key] = val
+
+                commands.append({
+                    "name": meta.get("name", skill_dir.name),
+                    "description": meta.get("description", "")[:100],
+                    "args": meta.get("argument-hint", ""),
+                })
+            except Exception:
+                continue
+
+        return commands
 
     @staticmethod
     def _capture_screenshot():

@@ -15,6 +15,7 @@ RTX 3090上でfaster-whisper (large-v3-turbo) → gpt-oss:20b を連携し、
 
 import argparse
 import json
+import re
 import sys
 import tempfile
 import time
@@ -233,6 +234,103 @@ def refine_with_llm(
         "model": model,
         "refine_time": refine_time,
     }
+
+
+# --- スラッシュコマンド検出・マッチング ---
+
+SLASH_PREFIXES = [
+    r"^スラッシュ\s*",       # Japanese katakana
+    r"^すらっしゅ\s*",       # Japanese hiragana
+    r"^[Ss][Ll][Aa][Ss][Hh]\s+",  # English (case-insensitive)
+]
+
+
+def detect_slash_prefix(raw_text: str) -> tuple[bool, str]:
+    """raw_textがスラッシュコマンドプレフィックスで始まるか検出.
+
+    Returns:
+        (is_slash, remaining_text) — プレフィックス検出時はTrue + 残りのテキスト
+    """
+    text = raw_text.strip()
+    for pattern in SLASH_PREFIXES:
+        m = re.match(pattern, text)
+        if m:
+            return True, text[m.end():].strip()
+    return False, text
+
+
+def match_slash_command(
+    spoken_text: str,
+    commands: list[dict],
+    model: str = DEFAULT_MODEL,
+    language: str = DEFAULT_LANGUAGE,
+) -> dict:
+    """発話テキストをスラッシュコマンドにLLMマッチング.
+
+    Returns:
+        {"matched": True/False, "command": "/name args", "match_time": float}
+    """
+    import requests
+
+    cmd_list = "\n".join(
+        f"- /{c['name']}"
+        + (f" {c['args']}" if c.get("args") else "")
+        + f"  -- {c.get('description', '')[:80]}"
+        for c in commands
+    )
+
+    system_prompt = f"""あなたは音声コマンドマッチャーです。ユーザーが音声で話した内容を、以下のコマンド一覧から最も適切なコマンドにマッチングしてください。
+
+コマンド一覧:
+{cmd_list}
+
+ルール:
+1. 入力テキストからコマンド名と引数を特定する
+2. 出力は「/コマンド名 引数」の形式のみ（説明やコメントは一切不要）
+3. コマンド名が音声で不明瞭な場合、最も近いコマンドを選ぶ
+4. 引数が話されていればそのまま含める（数字、URL、キーワード等）
+5. 引数がなければコマンド名のみ出力
+6. どのコマンドにもマッチしない場合は「NO_MATCH」とだけ出力
+7. カタカナの技術用語は本来の英字表記に戻す（イシュー→issue、リサーチ→research、レジューム→resume、コミット→commit等）
+
+例:
+- 「イシュートゥーピーアール 123」→ /issue-to-pr 123
+- 「リサーチトゥーイシュー 認証周りの問題」→ /research-to-issue 認証周りの問題
+- 「レジュームセッション 30分」→ /resume-session 30m
+- 「ヘルプ」→ /help
+- 「コミット」→ /commit
+- 「ピーディーエフ」→ /pdf
+- 「コンパクト」→ /compact
+- 「イシュートゥーピーアール ナンバー45 スキップレビュー」→ /issue-to-pr 45 --skip-review"""
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": spoken_text},
+    ]
+
+    t0 = time.time()
+    resp = requests.post(
+        f"{OLLAMA_URL}/api/chat",
+        json={
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "options": {"temperature": 0.1, "num_predict": 256, "num_ctx": 4096},
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    match_time = time.time() - t0
+
+    result_text = data["message"]["content"].strip()
+    # 複数行の場合は1行目のみ
+    result_text = result_text.split("\n")[0].strip()
+
+    if result_text == "NO_MATCH" or not result_text.startswith("/"):
+        return {"matched": False, "command": "", "match_time": match_time}
+
+    return {"matched": True, "command": result_text, "match_time": match_time}
 
 
 def process_audio(
