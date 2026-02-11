@@ -220,7 +220,7 @@ def refine_with_llm(
             "messages": messages,
             "stream": False,
             "think": "low",
-            "options": {"temperature": 0.1, "num_predict": 4096, "num_ctx": 4096},
+            "options": {"temperature": 0.1, "num_predict": 8192, "num_ctx": 16384},
         },
         timeout=120,
     )
