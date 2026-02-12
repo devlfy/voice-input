@@ -28,6 +28,8 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 DEFAULT_MODEL = os.environ.get("LLM_MODEL", "gpt-oss:20b")
 VISION_MODEL = os.environ.get("VISION_MODEL", "qwen3-vl:8b-instruct")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "large-v3-turbo")
+WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "auto")
+WHISPER_COMPUTE = os.environ.get("WHISPER_COMPUTE_TYPE", "default")
 DEFAULT_LANGUAGE = os.environ.get("DEFAULT_LANGUAGE", "ja")
 
 # Vision servers: comma-separated Ollama URLs for remote vision inference.
@@ -87,7 +89,14 @@ def _get_whisper_model():
     global _whisper_model
     if _whisper_model is None:
         from faster_whisper import WhisperModel
-        _whisper_model = WhisperModel(WHISPER_MODEL, device="cuda", compute_type="float16")
+        device = WHISPER_DEVICE
+        if device == "auto":
+            import shutil
+            device = "cuda" if shutil.which("nvidia-smi") else "cpu"
+        compute = WHISPER_COMPUTE
+        if compute == "default":
+            compute = "float16" if device == "cuda" else "int8"
+        _whisper_model = WhisperModel(WHISPER_MODEL, device=device, compute_type=compute)
     return _whisper_model
 
 

@@ -86,6 +86,43 @@ docker run --gpus all -p 8991:8991 \
   voice-input
 ```
 
+### Mac-only setup (Apple Silicon, 16 GB)
+
+No Linux server needed. Everything runs on your Mac using Ollama + CPU Whisper.
+
+```bash
+# Clone
+git clone https://github.com/xuiltul/voice-input
+cd voice-input
+
+# Setup
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+# Install Ollama (https://ollama.com)
+ollama pull gemma3:4b       # Lightweight refinement model (~3 GB)
+
+# Start server (CPU Whisper + small model, no CUDA needed)
+WHISPER_MODEL=small LLM_MODEL=gemma3:4b .venv/bin/python ws_server.py
+```
+
+Then in another terminal:
+
+```bash
+python3 mac_client.py --server ws://localhost:8991 --model gemma3:4b
+```
+
+**Memory budget (16 GB Unified Memory):**
+
+| Component | Memory | Notes |
+|-----------|--------|-------|
+| macOS | ~5 GB | System overhead |
+| Whisper `small` | ~1 GB | CPU inference, int8 quantization |
+| `gemma3:4b` | ~3 GB | Fast refinement via Ollama |
+| **Total** | **~9 GB** | Leaves headroom for other apps |
+
+> **Tip:** If you have 32 GB+, use `WHISPER_MODEL=large-v3-turbo` and `LLM_MODEL=qwen2.5:7b` for better accuracy. Vision (`qwen3-vl:8b-instruct`) can also fit but adds ~5 GB.
+
 ### Mac client
 
 ```bash
@@ -275,6 +312,8 @@ To add a new language, create `prompts/{lang_code}.json` with this structure:
 
 If a language has no matching prompt file, it falls back to English, then Japanese.
 
+> **Prompt design note:** Keep the system prompt concise (~400 chars for Japanese). Small models (7B-20B) with `think: "low"` degrade significantly when the prompt is too long — they start dropping content or garbling words instead of formatting. Use few-shot examples (max 2) to demonstrate behavior rather than writing exhaustive rules in the system prompt.
+
 ## Architecture
 
 | Component | Role | Tech |
@@ -289,7 +328,7 @@ If a language has no matching prompt file, it falls back to English, then Japane
 
 | Model | Purpose | VRAM | Lifecycle |
 |-------|---------|------|-----------|
-| `large-v3-turbo` | Whisper speech recognition | ~3 GB | Loaded once at startup, stays in memory |
+| `large-v3-turbo` | Whisper speech recognition | ~3 GB | Loaded once at startup, stays in memory. Auto-detects CUDA/CPU |
 | `gpt-oss:20b` | Text refinement (configurable) | ~12 GB | Managed by Ollama (load on demand), `think: "low"` for speed |
 | `qwen3-vl:8b-instruct` | Active tab text extraction (focused window screenshot) | ~5 GB | Runs on separate GPU server (no local VRAM usage) |
 
@@ -323,7 +362,9 @@ Server → Client: {"type": "result", ...}
 | `LLM_MODEL` | `gpt-oss:20b` | Model for text refinement |
 | `VISION_MODEL` | `qwen3-vl:8b-instruct` | Model for active tab text extraction |
 | `VISION_SERVERS` | *(unset = local Ollama)* | Comma-separated Ollama URLs for remote vision inference |
-| `WHISPER_MODEL` | `large-v3-turbo` | Whisper model name |
+| `WHISPER_MODEL` | `large-v3-turbo` | Whisper model name (`small`, `medium`, `large-v3-turbo`) |
+| `WHISPER_DEVICE` | `auto` | Whisper device (`auto`, `cuda`, `cpu`) |
+| `WHISPER_COMPUTE_TYPE` | `default` | Whisper compute type (`default`, `float16`, `int8`). `default` = float16 for CUDA, int8 for CPU |
 | `DEFAULT_LANGUAGE` | `ja` | Default language for transcription |
 | `VOICE_INPUT_SERVER` | `ws://localhost:8991` | Mac client: default WebSocket server URL |
 
