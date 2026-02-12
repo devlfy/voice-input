@@ -304,7 +304,7 @@ async def handle_stream_end(websocket, client_id: str):
 
     cfg = client_configs.get(client_id, {})
 
-    # 最終音声を必ずVAD有効で再処理（完全な録音に対してはVADが正しく動く）
+    # 最終音声をVAD有効で再処理し、VADが全除外した場合はVAD無効で再試行
     raw_text = ""
     transcribe_time = 0
     duration = 0
@@ -324,9 +324,26 @@ async def handle_stream_end(websocket, client_id: str):
             raw_text = result["raw_text"]
             duration = result.get("duration", 0)
             detected_lang = result.get("language", detected_lang)
-            log.info(f"Final transcribe: {duration:.1f}s audio → "
+            log.info(f"Final transcribe (VAD): {duration:.1f}s audio → "
                      f"{len(raw_text)} chars in {transcribe_time:.1f}s "
                      f"(lang={detected_lang})")
+
+            # VADが全除外してストリーミングpartialにはテキストがある場合
+            # → VAD無効で再処理（VADの誤検出対策）
+            if not raw_text.strip() and state.latest_text.strip():
+                log.warning(f"VAD filtered all speech, retrying without VAD "
+                            f"(partial had: {state.latest_text[:60]})")
+                t0 = time.time()
+                result = await loop.run_in_executor(
+                    None, lambda: transcribe(tmp_path, cfg.get("language"),
+                                             vad_filter=False)
+                )
+                transcribe_time += time.time() - t0
+                raw_text = result["raw_text"]
+                duration = result.get("duration", 0)
+                detected_lang = result.get("language", detected_lang)
+                log.info(f"Final transcribe (no VAD): {duration:.1f}s audio → "
+                         f"{len(raw_text)} chars")
         except Exception as e:
             log.error(f"Final transcribe error: {e}")
             # フォールバック: ストリーミング中のpartialテキストを使う
