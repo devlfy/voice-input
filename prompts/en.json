@@ -11,6 +11,6 @@
       "assistant": "Which one do you think is better? Option A has lower cost, but option B has better performance. What should we do?"
     }
   ],
-  "context_prefix": "Context information (from screenshot analysis):",
+  "context_prefix": "Context information (screen text):",
   "custom_prompt_prefix": "Additional instructions:"
 }

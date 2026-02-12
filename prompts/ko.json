@@ -11,6 +11,6 @@
       "assistant": "어떤 게 더 좋을까요? A 방법은 비용이 낮은데 B 방법은 성능이 좋거든요. 어떻게 할까요?"
     }
   ],
-  "context_prefix": "컨텍스트 정보(스크린샷 분석 결과):",
+  "context_prefix": "컨텍스트 정보(화면 텍스트):",
   "custom_prompt_prefix": "추가 지시:"
 }

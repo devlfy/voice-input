@@ -66,6 +66,7 @@ class StreamState:
     __slots__ = (
         "active", "latest_audio", "latest_text", "vision_task",
         "vision_start", "processing", "has_newer", "vision_notified",
+        "text_context",
     )
 
     def __init__(self):
@@ -77,6 +78,7 @@ class StreamState:
         self.processing = False  # Whisperが実行中か
         self.has_newer = False   # 処理中に新しい音声が到着したか
         self.vision_notified = False  # Vision完了通知済みか
+        self.text_context: str | None = None  # AXテキスト抽出結果
 
 
 stream_states: dict[str, StreamState] = {}
@@ -178,7 +180,7 @@ async def handle_client(websocket):
 # =============================================================================
 
 async def handle_stream_start(websocket, client_id: str, data: dict):
-    """ストリーミング開始: Vision分析を即座に開始."""
+    """ストリーミング開始: text_context優先、なければVision分析を非同期起動."""
     state = stream_states[client_id]
     state.active = True
     state.latest_audio = None
@@ -186,16 +188,32 @@ async def handle_stream_start(websocket, client_id: str, data: dict):
     state.processing = False
     state.has_newer = False
     state.vision_notified = False
+    state.text_context = None
 
     # 前回のvisionタスクが残っていればキャンセル
     if state.vision_task and not state.vision_task.done():
         state.vision_task.cancel()
         log.info(f"Cancelled previous vision task for {client_id}")
 
-    # Vision分析
-    screenshot_b64 = data.get("screenshot", "")
     cfg = client_configs.get(client_id, {})
-    if screenshot_b64 and not cfg.get("raw", False):
+
+    # 優先順位: text_context > screenshot > なし
+    text_context = data.get("text_context", "")
+    screenshot_b64 = data.get("screenshot", "")
+
+    if text_context and not cfg.get("raw", False):
+        # AXテキスト抽出成功 → Vision不要、即座にコンテキスト確定
+        if len(text_context) > MAX_CONTEXT_LEN:
+            text_context = text_context[:MAX_CONTEXT_LEN] + "..."
+        state.text_context = text_context
+        state.vision_task = None
+        log.info(f"Stream started for {client_id} "
+                 f"(text_context: {len(text_context)} chars)")
+        await send_json(websocket, {"type": "stream_ack"})
+        # AXテキストは即座に利用可能なのでvision_readyを即通知
+        await send_json(websocket, {"type": "status", "stage": "vision_ready"})
+    elif screenshot_b64 and not cfg.get("raw", False):
+        # スクリーンショット → 従来通りVision非同期起動
         loop = asyncio.get_event_loop()
         state.vision_start = time.time()
         state.vision_task = asyncio.ensure_future(
@@ -203,11 +221,11 @@ async def handle_stream_start(websocket, client_id: str, data: dict):
         )
         log.info(f"Stream started for {client_id} "
                  f"(vision: {len(screenshot_b64) // 1024}KB)")
+        await send_json(websocket, {"type": "stream_ack"})
     else:
         state.vision_task = None
         log.info(f"Stream started for {client_id}")
-
-    await send_json(websocket, {"type": "stream_ack"})
+        await send_json(websocket, {"type": "stream_ack"})
 
 
 async def handle_stream_chunk(websocket, client_id: str, audio_data: bytes):
@@ -362,10 +380,14 @@ async def handle_stream_end(websocket, client_id: str):
         })
         return
 
-    # Vision結果（完了していれば使う、未完了なら待たずに進む）
+    # コンテキスト解決: text_context優先、なければVision結果
     context_hint = ""
     analysis_time = 0
-    if state.vision_task:
+    if state.text_context:
+        # AXテキスト抽出結果をそのまま使用（即座、GPU不要）
+        context_hint = state.text_context
+        log.info(f"Using text_context ({len(context_hint)} chars)")
+    elif state.vision_task:
         if state.vision_task.done():
             try:
                 vision_result = state.vision_task.result()

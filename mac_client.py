@@ -43,6 +43,7 @@ CHANNELS = 1
 DTYPE = "int16"
 HOTKEY = keyboard.Key.alt_l  # 左Optionキー
 STREAM_INTERVAL = 2.0  # ストリーミングチャンク送信間隔（秒）
+MIN_AX_TEXT_LEN = 20   # AXテキスト抽出の最小文字数（これ未満ならVisionフォールバック）
 
 # --- ステータスオーバーレイ（フローティングHUD） ---
 # macOS PyObjC (AppKit) で画面下部にワイドなフローティングHUDを表示
@@ -450,7 +451,7 @@ class VoiceInputClient:
             self._stop_recording()
 
     def _start_recording(self):
-        """録音開始（ストリーミングモード: スクリーンショット + 2秒ごとにチャンク送信）."""
+        """録音開始（ストリーミングモード: AXテキスト or スクリーンショット + 2秒ごとにチャンク送信）."""
         if not self._connected:
             print("  ✗ Not connected to server")
             return
@@ -460,13 +461,21 @@ class VoiceInputClient:
         print("  ● Recording...", end="", flush=True)
         self._update_overlay("recording")
 
-        # stream_start送信（スクリーンショット付き）
+        # stream_start送信（AXテキスト優先、不十分ならスクリーンショット）
         start_msg = {"type": "stream_start"}
         if self.use_screenshot and self.ws and self._connected:
-            screenshot_b64 = self._capture_screenshot()
-            if screenshot_b64:
-                start_msg["screenshot"] = screenshot_b64
-                print(" +screenshot", end="", flush=True)
+            # AXテキスト抽出を試行
+            ax_text, ax_app = self._extract_ax_text()
+            if ax_text and len(ax_text) >= MIN_AX_TEXT_LEN:
+                start_msg["text_context"] = ax_text
+                app_label = f" [{ax_app}]" if ax_app else ""
+                print(f" +ax_text({len(ax_text)}ch){app_label}", end="", flush=True)
+            else:
+                # AX不十分 → スクリーンショットにフォールバック
+                screenshot_b64 = self._capture_screenshot()
+                if screenshot_b64:
+                    start_msg["screenshot"] = screenshot_b64
+                    print(" +screenshot", end="", flush=True)
 
         asyncio.run_coroutine_threadsafe(
             self.ws.send(json.dumps(start_msg)),
@@ -682,6 +691,131 @@ class VoiceInputClient:
                 os.unlink(tmp_path)
             except Exception:
                 pass
+
+    @staticmethod
+    def _extract_ax_text() -> tuple[str | None, str | None]:
+        """macOS Accessibility APIでフォーカスウィンドウの表示テキストを抽出.
+
+        Returns:
+            (text, app_name) — 成功時はテキストとアプリ名、失敗時は (None, None)
+        """
+        MAX_DEPTH = 15
+        MAX_ELEMENTS = 500
+        TIMEOUT_MS = 200
+
+        try:
+            from AppKit import NSWorkspace
+            from ApplicationServices import (
+                AXUIElementCreateApplication,
+                AXUIElementCopyAttributeValue,
+            )
+            from CoreFoundation import CFEqual
+            import Quartz
+        except ImportError:
+            return (None, None)
+
+        try:
+            t0 = time.time()
+            deadline = t0 + TIMEOUT_MS / 1000.0
+
+            # フォーカスアプリのPID取得
+            frontmost = NSWorkspace.sharedWorkspace().frontmostApplication()
+            if not frontmost:
+                return (None, None)
+            pid = frontmost.processIdentifier()
+            app_name = frontmost.localizedName() or "Unknown"
+
+            app_ref = AXUIElementCreateApplication(pid)
+
+            # フォーカスウィンドウ取得
+            err, focused_window = AXUIElementCopyAttributeValue(
+                app_ref, "AXFocusedWindow", None
+            )
+            if err != 0 or focused_window is None:
+                return (None, None)
+
+            # テキスト抽出対象ロール
+            text_roles = {
+                "AXStaticText", "AXTextField", "AXTextArea",
+                "AXLink", "AXHeading", "AXCell",
+            }
+            # 再帰走査対象コンテナロール
+            container_roles = {
+                "AXGroup", "AXScrollArea", "AXWebArea", "AXWindow",
+                "AXSplitGroup", "AXTabGroup", "AXList", "AXTable",
+                "AXRow", "AXColumn", "AXOutline", "AXBrowser",
+                "AXLayoutArea", "AXSheet", "AXDrawer",
+            }
+
+            texts = []
+            element_count = [0]
+
+            def _walk(element, depth):
+                if depth > MAX_DEPTH:
+                    return
+                if element_count[0] >= MAX_ELEMENTS:
+                    return
+                if time.time() > deadline:
+                    return
+
+                element_count[0] += 1
+
+                # ロール取得
+                err, role = AXUIElementCopyAttributeValue(element, "AXRole", None)
+                if err != 0 or role is None:
+                    return
+                role = str(role)
+
+                # パスワードフィールドはスキップ
+                err2, subrole = AXUIElementCopyAttributeValue(element, "AXSubrole", None)
+                if err2 == 0 and subrole and str(subrole) == "AXSecureTextField":
+                    return
+
+                # テキスト要素からAXValue取得
+                if role in text_roles:
+                    err_v, value = AXUIElementCopyAttributeValue(element, "AXValue", None)
+                    if err_v == 0 and value and isinstance(value, str) and value.strip():
+                        texts.append(value.strip())
+                    else:
+                        # AXTitle fallback
+                        err_t, title = AXUIElementCopyAttributeValue(element, "AXTitle", None)
+                        if err_t == 0 and title and isinstance(title, str) and title.strip():
+                            texts.append(title.strip())
+
+                # コンテナ or テキスト要素: 子を走査
+                if role in container_roles or role in text_roles:
+                    err_c, children = AXUIElementCopyAttributeValue(
+                        element, "AXChildren", None
+                    )
+                    if err_c == 0 and children:
+                        for child in children:
+                            if element_count[0] >= MAX_ELEMENTS:
+                                break
+                            if time.time() > deadline:
+                                break
+                            _walk(child, depth + 1)
+
+            _walk(focused_window, 0)
+
+            if not texts:
+                return (None, None)
+
+            combined = "\n".join(texts)
+            elapsed_ms = (time.time() - t0) * 1000
+            # 重複行を除去しつつ順序保持
+            seen = set()
+            unique_lines = []
+            for line in combined.split("\n"):
+                stripped = line.strip()
+                if stripped and stripped not in seen:
+                    seen.add(stripped)
+                    unique_lines.append(stripped)
+            result = "\n".join(unique_lines)
+
+            return (result, app_name) if result else (None, None)
+
+        except Exception:
+            return (None, None)
 
     def _audio_callback(self, indata, frames, time_info, status):
         """sounddevice録音コールバック."""

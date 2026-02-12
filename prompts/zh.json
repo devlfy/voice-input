@@ -11,6 +11,6 @@
       "assistant": "你觉得哪个好一点？A方案成本低，但是B方案性能好。你说怎么办？"
     }
   ],
-  "context_prefix": "上下文信息（来自截图分析）：",
+  "context_prefix": "上下文信息（屏幕文本）：",
   "custom_prompt_prefix": "附加指示："
 }

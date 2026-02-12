@@ -11,6 +11,6 @@
       "assistant": "pull requestのreviewお願いします。mergeはまだしないでください。"
     }
   ],
-  "context_prefix": "コンテキスト情報（スクリーンショットから判定）:",
+  "context_prefix": "コンテキスト情報（画面テキスト）:",
   "custom_prompt_prefix": "追加指示:"
 }
