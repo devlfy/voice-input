@@ -239,9 +239,8 @@ def refine_with_llm(
 # --- スラッシュコマンド検出・マッチング ---
 
 SLASH_PREFIXES = [
-    r"^スラッシュ\s*",       # Japanese katakana
-    r"^すらっしゅ\s*",       # Japanese hiragana
-    r"^[Ss][Ll][Aa][Ss][Hh]\s+",  # English (case-insensitive)
+    r"^コマンド[&＆\s]*",                     # Japanese "command" (primary)
+    r"^[Cc][Oo][Mm][Mm][Aa][Nn][Dd][&＆\s]+", # English "command"
 ]
 
 
