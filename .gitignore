@@ -10,4 +10,3 @@ build/
 .env
 CLAUDE.md
 start.sh
-stop.sh
