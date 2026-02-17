@@ -18,7 +18,7 @@ for i in $(seq 1 30); do
 done
 
 # Pull default models if not present
-LLM_MODEL="${LLM_MODEL:-gpt-oss:20b}"
+LLM_MODEL="${LLM_MODEL:-glm-flash-q8:16k}"
 VISION_MODEL="${VISION_MODEL:-qwen3-vl:8b-instruct}"
 
 echo "Checking models..."

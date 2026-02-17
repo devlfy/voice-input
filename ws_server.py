@@ -41,6 +41,7 @@ from voice_input import (
     DEFAULT_MODEL,
     VISION_MODEL,
     OLLAMA_URL,
+    LLM_SERVERS,
 )
 
 logging.basicConfig(
@@ -112,9 +113,14 @@ async def handle_client(websocket):
 
                 if msg_type == "config":
                     cfg = client_configs[client_id]
-                    for key in ("language", "model", "prompt"):
+                    for key in ("language", "prompt"):
                         if key in data:
                             cfg[key] = data[key]
+                    # model: クライアント指定を無視しサーバーのDEFAULT_MODELを使用
+                    # （LLMはリモートサーバーで実行するため、利用可能モデルはサーバーが管理）
+                    if "model" in data and data["model"] != DEFAULT_MODEL:
+                        log.info(f"Client requested model '{data['model']}', "
+                                 f"using server default '{DEFAULT_MODEL}' instead")
                     if "raw" in data:
                         cfg["raw"] = bool(data["raw"])
                     if "slash_commands" in data:
@@ -647,6 +653,8 @@ async def main(host: str = "0.0.0.0", port: int = 8991):
     from voice_input import VISION_SERVERS
     vision_loc = "local" if len(VISION_SERVERS) == 1 and VISION_SERVERS[0] == OLLAMA_URL else f"remote: {','.join(VISION_SERVERS)}"
     log.info(f"Vision model: {VISION_MODEL} ({vision_loc})")
+    llm_loc = "local" if len(LLM_SERVERS) == 1 and LLM_SERVERS[0] == OLLAMA_URL else f"remote: {','.join(LLM_SERVERS)}"
+    log.info(f"LLM model: {DEFAULT_MODEL} ({llm_loc})")
 
     # Whisperモデルを事前ロード
     from voice_input import _get_whisper_model

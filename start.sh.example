@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# voice-input server launcher
+set -euo pipefail
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+VENV="$DIR/.venv"
+
+if [[ ! -d "$VENV" ]]; then
+  echo "error: venv not found at $VENV" >&2
+  echo "run: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt" >&2
+  exit 1
+fi
+
+# pip-installed CUDA libs need LD_LIBRARY_PATH
+PYVER=$("$VENV/bin/python" -c 'import sys;print(f"python{sys.version_info.major}.{sys.version_info.minor}")')
+CUDA_LIBS="$VENV/lib/$PYVER/site-packages/nvidia"
+if [[ -d "$CUDA_LIBS" ]]; then
+  export LD_LIBRARY_PATH="${CUDA_LIBS}/cublas/lib:${CUDA_LIBS}/cudnn/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
+# Vision servers: remote Ollama instances for vision inference
+# Override with VISION_SERVERS env var or edit below
+: "${VISION_SERVERS:=http://YOUR_GPU_SERVER_1:11435,http://YOUR_GPU_SERVER_2:11434}"
+export VISION_SERVERS
+
+# LLM servers: remote Ollama instances for LLM inference (refinement)
+# Override with LLM_SERVERS env var or edit below
+: "${LLM_SERVERS:=http://YOUR_GPU_SERVER_2:11434,http://YOUR_GPU_SERVER_1:11435}"
+export LLM_SERVERS
+
+exec "$VENV/bin/python" "$DIR/ws_server.py" "$@"
