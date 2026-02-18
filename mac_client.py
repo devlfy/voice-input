@@ -238,7 +238,7 @@ if __name__ == "__main__":
 
 class VoiceInputClient:
     def __init__(self, server_url: str, language: str = "ja",
-                 model: str = "glm-flash-q8:16k", raw: bool = False,
+                 model: str = "glm-flash-q8:32k", raw: bool = False,
                  prompt: str | None = None, paste: bool = True,
                  use_screenshot: bool = True):
         self.server_url = server_url
@@ -919,7 +919,7 @@ Usage:
         help=f"WebSocket server URL (default: {default_server})",
     )
     parser.add_argument("-l", "--language", default="ja", help="Language (default: ja)")
-    parser.add_argument("-m", "--model", default="glm-flash-q8:16k", help="Ollama model")
+    parser.add_argument("-m", "--model", default="glm-flash-q8:32k", help="Ollama model")
     parser.add_argument("--raw", action="store_true", help="Skip LLM refinement")
     parser.add_argument("-p", "--prompt", default=None, help="Custom refinement prompt")
     parser.add_argument(

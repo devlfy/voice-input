@@ -38,6 +38,8 @@ from voice_input import (
     detect_slash_prefix,
     match_slash_command,
     analyze_screenshot,
+    audio_rms_db,
+    SILENCE_THRESHOLD_DB,
     DEFAULT_MODEL,
     VISION_MODEL,
     OLLAMA_URL,
@@ -267,32 +269,38 @@ async def _stream_whisper_loop(websocket, client_id: str):
         audio = state.latest_audio
         state.has_newer = False
 
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            f.write(audio)
-            tmp_path = f.name
+        # 無音チェック: Whisperに投げる前にRMS音量を確認
+        rms_db = audio_rms_db(audio)
+        if rms_db < SILENCE_THRESHOLD_DB:
+            log.info(f"Stream chunk silent ({rms_db:.1f} dB < {SILENCE_THRESHOLD_DB} dB), "
+                     f"skipping Whisper")
+        else:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                f.write(audio)
+                tmp_path = f.name
 
-        try:
-            t0 = time.time()
-            # ストリーミング中はVAD無効（短いチャンクだとVADが全削除する）
-            result = await loop.run_in_executor(
-                None, lambda: transcribe(tmp_path, cfg.get("language"),
-                                         vad_filter=False)
-            )
-            elapsed = time.time() - t0
-            state.latest_text = result["raw_text"]
+            try:
+                t0 = time.time()
+                # ストリーミング中はVAD無効（短いチャンクだとVADが全削除する）
+                result = await loop.run_in_executor(
+                    None, lambda: transcribe(tmp_path, cfg.get("language"),
+                                             vad_filter=False)
+                )
+                elapsed = time.time() - t0
+                state.latest_text = result["raw_text"]
 
-            if state.latest_text.strip():
-                await send_json(websocket, {
-                    "type": "partial",
-                    "text": state.latest_text,
-                    "duration": result.get("duration", 0),
-                })
-                log.info(f"Stream partial ({elapsed:.1f}s): "
-                         f"{state.latest_text[:60]}")
-        except Exception as e:
-            log.error(f"Stream Whisper error: {e}")
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
+                if state.latest_text.strip():
+                    await send_json(websocket, {
+                        "type": "partial",
+                        "text": state.latest_text,
+                        "duration": result.get("duration", 0),
+                    })
+                    log.info(f"Stream partial ({elapsed:.1f}s, {rms_db:.1f} dB): "
+                             f"{state.latest_text[:60]}")
+            except Exception as e:
+                log.error(f"Stream Whisper error: {e}")
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
 
         # Vision完了を通知（一度だけ）
         if (state.vision_task and state.vision_task.done()
@@ -334,47 +342,54 @@ async def handle_stream_end(websocket, client_id: str):
     duration = 0
     detected_lang = cfg.get("language", "ja")
     if state.latest_audio:
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            f.write(state.latest_audio)
-            tmp_path = f.name
-        try:
-            loop = asyncio.get_event_loop()
-            t0 = time.time()
-            result = await loop.run_in_executor(
-                None, lambda: transcribe(tmp_path, cfg.get("language"),
-                                         vad_filter=True)
-            )
-            transcribe_time = time.time() - t0
-            raw_text = result["raw_text"]
-            duration = result.get("duration", 0)
-            detected_lang = result.get("language", detected_lang)
-            log.info(f"Final transcribe (VAD): {duration:.1f}s audio → "
-                     f"{len(raw_text)} chars in {transcribe_time:.1f}s "
-                     f"(lang={detected_lang})")
-
-            # VADが全除外してストリーミングpartialにはテキストがある場合
-            # → VAD無効で再処理（VADの誤検出対策）
-            if not raw_text.strip() and state.latest_text.strip():
-                log.warning(f"VAD filtered all speech, retrying without VAD "
-                            f"(partial had: {state.latest_text[:60]})")
+        # 最終音声の無音チェック
+        rms_db = audio_rms_db(state.latest_audio)
+        if rms_db < SILENCE_THRESHOLD_DB:
+            log.info(f"Final audio silent ({rms_db:.1f} dB < {SILENCE_THRESHOLD_DB} dB), "
+                     f"skipping Whisper")
+        else:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                f.write(state.latest_audio)
+                tmp_path = f.name
+            try:
+                loop = asyncio.get_event_loop()
                 t0 = time.time()
                 result = await loop.run_in_executor(
                     None, lambda: transcribe(tmp_path, cfg.get("language"),
-                                             vad_filter=False)
+                                             vad_filter=True)
                 )
-                transcribe_time += time.time() - t0
+                transcribe_time = time.time() - t0
                 raw_text = result["raw_text"]
                 duration = result.get("duration", 0)
                 detected_lang = result.get("language", detected_lang)
-                log.info(f"Final transcribe (no VAD): {duration:.1f}s audio → "
-                         f"{len(raw_text)} chars")
-        except Exception as e:
-            log.error(f"Final transcribe error: {e}")
-            # フォールバック: ストリーミング中のpartialテキストを使う
-            raw_text = state.latest_text
-            log.info(f"Falling back to partial text: {raw_text[:60]}")
-        finally:
-            Path(tmp_path).unlink(missing_ok=True)
+                log.info(f"Final transcribe (VAD, {rms_db:.1f} dB): "
+                         f"{duration:.1f}s audio → "
+                         f"{len(raw_text)} chars in {transcribe_time:.1f}s "
+                         f"(lang={detected_lang})")
+
+                # VADが全除外してストリーミングpartialにはテキストがある場合
+                # → VAD無効で再処理（VADの誤検出対策）
+                if not raw_text.strip() and state.latest_text.strip():
+                    log.warning(f"VAD filtered all speech, retrying without VAD "
+                                f"(partial had: {state.latest_text[:60]})")
+                    t0 = time.time()
+                    result = await loop.run_in_executor(
+                        None, lambda: transcribe(tmp_path, cfg.get("language"),
+                                                 vad_filter=False)
+                    )
+                    transcribe_time += time.time() - t0
+                    raw_text = result["raw_text"]
+                    duration = result.get("duration", 0)
+                    detected_lang = result.get("language", detected_lang)
+                    log.info(f"Final transcribe (no VAD): {duration:.1f}s audio → "
+                             f"{len(raw_text)} chars")
+            except Exception as e:
+                log.error(f"Final transcribe error: {e}")
+                # フォールバック: ストリーミング中のpartialテキストを使う
+                raw_text = state.latest_text
+                log.info(f"Falling back to partial text: {raw_text[:60]}")
+            finally:
+                Path(tmp_path).unlink(missing_ok=True)
     else:
         raw_text = state.latest_text
 
@@ -510,6 +525,19 @@ async def handle_audio(websocket, client_id: str, audio_data: bytes,
         context_hint = None
         analysis_time = 0
 
+        # 無音チェック
+        rms_db = audio_rms_db(audio_data)
+        if rms_db < SILENCE_THRESHOLD_DB:
+            log.info(f"[legacy] Audio silent ({rms_db:.1f} dB < {SILENCE_THRESHOLD_DB} dB), "
+                     f"skipping Whisper")
+            await send_json(websocket, {
+                "type": "result", "text": "", "raw_text": "",
+                "language": "", "duration": 0,
+                "transcribe_time": 0, "analysis_time": 0,
+                "refine_time": 0, "context": None,
+            })
+            return
+
         await send_json(websocket, {"type": "status", "stage": "transcribing"})
         t0 = time.time()
         whisper_result = await loop.run_in_executor(
@@ -517,7 +545,7 @@ async def handle_audio(websocket, client_id: str, audio_data: bytes,
         )
         transcribe_time = time.time() - t0
         raw_text = whisper_result["raw_text"]
-        log.info(f"Transcribed: {whisper_result['duration']:.1f}s → "
+        log.info(f"Transcribed ({rms_db:.1f} dB): {whisper_result['duration']:.1f}s → "
                  f"{len(raw_text)} chars in {transcribe_time:.1f}s")
 
         # Vision結果（完了していれば使う、未完了なら待たずに進む）
@@ -650,11 +678,12 @@ async def main(host: str = "0.0.0.0", port: int = 8991):
     """WebSocketサーバーを起動."""
     log.info(f"Starting WebSocket server on ws://{host}:{port}")
     log.info(f"Protocol: streaming (stream_start/end) + legacy (audio_with_screenshot)")
-    from voice_input import VISION_SERVERS
+    from voice_input import VISION_SERVERS, LLM_API_FORMAT
     vision_loc = "local" if len(VISION_SERVERS) == 1 and VISION_SERVERS[0] == OLLAMA_URL else f"remote: {','.join(VISION_SERVERS)}"
     log.info(f"Vision model: {VISION_MODEL} ({vision_loc})")
     llm_loc = "local" if len(LLM_SERVERS) == 1 and LLM_SERVERS[0] == OLLAMA_URL else f"remote: {','.join(LLM_SERVERS)}"
-    log.info(f"LLM model: {DEFAULT_MODEL} ({llm_loc})")
+    log.info(f"LLM model: {DEFAULT_MODEL} ({llm_loc}, api={LLM_API_FORMAT})")
+    log.info(f"Silence threshold: {SILENCE_THRESHOLD_DB} dB (SILENCE_THRESHOLD_DB)")
 
     # Whisperモデルを事前ロード
     from voice_input import _get_whisper_model

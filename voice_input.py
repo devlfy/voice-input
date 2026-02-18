@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """voice-input: Whisper文字起こし → Ollama LLM整形パイプライン.
 
-faster-whisper (large-v3-turbo) → リモートLLM (glm-flash-q8:16k) を連携し、
+faster-whisper (large-v3-turbo) → リモートLLM (glm-flash-q8:32k) を連携し、
 音声ファイルから整形済みテキストを高速生成する。
 
 使い方:
@@ -25,7 +25,7 @@ from pathlib import Path
 import os
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-DEFAULT_MODEL = os.environ.get("LLM_MODEL", "glm-flash-q8:16k")
+DEFAULT_MODEL = os.environ.get("LLM_MODEL", "glm-flash-q8:32k")
 VISION_MODEL = os.environ.get("VISION_MODEL", "qwen3-vl:8b-instruct")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "large-v3-turbo")
 WHISPER_DEVICE = os.environ.get("WHISPER_DEVICE", "auto")
@@ -42,7 +42,7 @@ VISION_SERVERS = (
     else [OLLAMA_URL]
 )
 
-# LLM servers: comma-separated Ollama URLs for remote LLM inference (refinement).
+# LLM servers: comma-separated URLs for remote LLM inference (refinement).
 # If set, LLM runs on these servers (no local VRAM usage).
 # If unset, LLM runs on the local Ollama (OLLAMA_URL).
 _llm_servers_env = os.environ.get("LLM_SERVERS", "")
@@ -51,6 +51,9 @@ LLM_SERVERS = (
     if _llm_servers_env
     else [OLLAMA_URL]
 )
+
+# LLM API format: "openai" for vLLM/OpenAI-compatible, "ollama" for Ollama native API
+LLM_API_FORMAT = os.environ.get("LLM_API_FORMAT", "openai")
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
@@ -91,7 +94,36 @@ def _load_prompt(lang: str) -> dict:
     return data
 
 
+# 無音判定の閾値 (dB)。この値以下のRMSレベルはWhisperに投げない。
+# int16 の -40 dB は RMS ≈ 328/32768 (≈1%) で、典型的なマイク背景ノイズ相当。
+SILENCE_THRESHOLD_DB = float(os.environ.get("SILENCE_THRESHOLD_DB", "-40"))
+
 _whisper_model = None
+
+
+def audio_rms_db(wav_data: bytes) -> float:
+    """WAVバイナリデータのRMS音量をdBで返す.
+
+    Returns:
+        RMS level in dBFS (0 dB = full-scale int16).
+        無音/空データの場合は -inf を返す。
+    """
+    import io
+    import wave
+    import numpy as np
+
+    with wave.open(io.BytesIO(wav_data), "rb") as wf:
+        frames = wf.readframes(wf.getnframes())
+
+    samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
+    if len(samples) == 0:
+        return -float("inf")
+
+    rms = np.sqrt(np.mean(samples ** 2))
+    if rms < 1.0:
+        return -float("inf")
+
+    return 20.0 * np.log10(rms / 32768.0)
 
 
 def _get_whisper_model():
@@ -203,6 +235,68 @@ def analyze_screenshot(screenshot_b64: str, vision_model: str = VISION_MODEL) ->
     raise RuntimeError(f"All vision servers failed: {last_err}")
 
 
+def _llm_chat(
+    messages: list[dict],
+    model: str = DEFAULT_MODEL,
+    max_tokens: int = 1024,
+    temperature: float = 0.1,
+    timeout: int = 120,
+) -> str:
+    """LLMサーバーにチャットリクエストを送信し応答テキストを返す.
+
+    LLM_API_FORMAT に応じて OpenAI互換 or Ollama形式を使い分ける。
+    LLM_SERVERS で指定されたサーバーに順番に試行。
+    """
+    import logging
+    import requests
+
+    log = logging.getLogger("voice_input.llm")
+
+    t0 = time.time()
+    last_err = None
+    for server_url in LLM_SERVERS:
+        try:
+            if LLM_API_FORMAT == "openai":
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "stream": False,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "chat_template_kwargs": {"enable_thinking": False},
+                }
+                resp = requests.post(
+                    f"{server_url}/v1/chat/completions",
+                    json=payload, timeout=timeout,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return data["choices"][0]["message"]["content"]
+            else:
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "stream": False,
+                    "think": False,
+                    "options": {"temperature": temperature, "num_predict": max_tokens},
+                }
+                resp = requests.post(
+                    f"{server_url}/api/chat",
+                    json=payload, timeout=timeout,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return data["message"]["content"]
+        except Exception as e:
+            elapsed = time.time() - t0
+            log.error(f"LLM server {server_url} failed ({elapsed:.1f}s): "
+                      f"{type(e).__name__}: {e}")
+            last_err = e
+            continue
+
+    raise RuntimeError(f"All LLM servers failed: {last_err}")
+
+
 def refine_with_llm(
     raw_text: str,
     model: str = DEFAULT_MODEL,
@@ -210,12 +304,11 @@ def refine_with_llm(
     custom_prompt: str | None = None,
     context_hint: str | None = None,
 ) -> dict:
-    """Ollama APIでテキストを整形する（言語別プロンプト使用）.
+    """LLMでテキストを整形する（言語別プロンプト使用）.
 
     LLM_SERVERS で指定されたサーバーに順番に試行。
     """
     import logging
-    import requests
 
     log = logging.getLogger("voice_input.refine")
 
@@ -238,51 +331,29 @@ def refine_with_llm(
     user_template = prompt_data.get("user_template", "```\n{text}\n```")
     messages.append({"role": "user", "content": user_template.format(text=raw_text)})
 
-    payload = {
-        "model": model,
-        "messages": messages,
-        "stream": False,
-        "think": False,
-        "options": {"temperature": 0.1, "num_predict": 1024},
-    }
-
     t0 = time.time()
-    last_err = None
-    for server_url in LLM_SERVERS:
-        try:
-            resp = requests.post(
-                f"{server_url}/api/chat", json=payload, timeout=120,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            refine_time = time.time() - t0
+    try:
+        refined = _llm_chat(messages, model=model)
+    except RuntimeError:
+        raise
+    refine_time = time.time() - t0
 
-            refined = data["message"]["content"]
+    # Guard: if refined text is drastically shorter, the LLM likely hallucinated
+    raw_len = len(raw_text)
+    refined_len = len(refined)
+    if raw_len > 0 and refined_len < raw_len * 0.4:
+        log.warning(
+            "Refinement too short (%d -> %d chars), falling back to raw text",
+            raw_len,
+            refined_len,
+        )
+        refined = raw_text
 
-            # Guard: if refined text is drastically shorter, the LLM likely hallucinated
-            raw_len = len(raw_text)
-            refined_len = len(refined)
-            if raw_len > 0 and refined_len < raw_len * 0.4:
-                log.warning(
-                    "Refinement too short (%d -> %d chars), falling back to raw text",
-                    raw_len,
-                    refined_len,
-                )
-                refined = raw_text
-
-            return {
-                "refined_text": refined,
-                "model": model,
-                "refine_time": refine_time,
-            }
-        except Exception as e:
-            elapsed = time.time() - t0
-            log.error(f"LLM server {server_url} failed ({elapsed:.1f}s): "
-                      f"{type(e).__name__}: {e}")
-            last_err = e
-            continue
-
-    raise RuntimeError(f"All LLM servers failed: {last_err}")
+    return {
+        "refined_text": refined,
+        "model": model,
+        "refine_time": refine_time,
+    }
 
 
 # --- スラッシュコマンド検出・マッチング ---
@@ -318,8 +389,6 @@ def match_slash_command(
     Returns:
         {"matched": True/False, "command": "/name args", "match_time": float}
     """
-    import requests
-
     cmd_list = "\n".join(
         f"- /{c['name']}"
         + (f" {c['args']}" if c.get("args") else "")
@@ -356,44 +425,18 @@ def match_slash_command(
         {"role": "user", "content": spoken_text},
     ]
 
-    import logging
-    log = logging.getLogger("voice_input.slash")
-
-    payload = {
-        "model": model,
-        "messages": messages,
-        "stream": False,
-        "think": False,
-        "options": {"temperature": 0.1, "num_predict": 256},
-    }
-
     t0 = time.time()
-    last_err = None
-    for server_url in LLM_SERVERS:
-        try:
-            resp = requests.post(
-                f"{server_url}/api/chat", json=payload, timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            match_time = time.time() - t0
+    result_text = _llm_chat(messages, model=model, max_tokens=256, timeout=30)
+    match_time = time.time() - t0
 
-            result_text = data["message"]["content"].strip()
-            # 複数行の場合は1行目のみ
-            result_text = result_text.split("\n")[0].strip()
+    result_text = result_text.strip()
+    # 複数行の場合は1行目のみ
+    result_text = result_text.split("\n")[0].strip()
 
-            if result_text == "NO_MATCH" or not result_text.startswith("/"):
-                return {"matched": False, "command": "", "match_time": match_time}
+    if result_text == "NO_MATCH" or not result_text.startswith("/"):
+        return {"matched": False, "command": "", "match_time": match_time}
 
-            return {"matched": True, "command": result_text, "match_time": match_time}
-        except Exception as e:
-            elapsed = time.time() - t0
-            log.error(f"LLM server {server_url} failed ({elapsed:.1f}s): "
-                      f"{type(e).__name__}: {e}")
-            last_err = e
-            continue
-
-    raise RuntimeError(f"All LLM servers failed: {last_err}")
+    return {"matched": True, "command": result_text, "match_time": match_time}
 
 
 def process_audio(
