@@ -86,11 +86,12 @@ def _pid_alive(pid: int | None) -> bool:
 
 
 class ProcessManager:
-    def __init__(self):
+    def __init__(self, vision: bool = False):
         self._server: subprocess.Popen | None = None
         self._client_pid: int | None = None
         self._lock = threading.Lock()
         self._client_starting = False
+        self.vision = vision  # whether to launch with screenshot/vision enabled
 
     def start(self):
         with self._lock:
@@ -124,7 +125,8 @@ class ProcessManager:
             self._client_starting = True
 
         # Launch via Terminal to inherit its microphone permission
-        script = str(REPO_DIR / "run_client.sh")
+        script_name = "run_client_vision.sh" if self.vision else "run_client.sh"
+        script = str(REPO_DIR / script_name)
         applescript = f'''
 tell application "Terminal"
     set w to do script "{script}"
@@ -219,6 +221,9 @@ class AppDelegate(NSObject):
         self._menu.setAutoenablesItems_(False)
         self._status_item = self._add_item("Starting…", None, enabled=False)
         self._menu.addItem_(NSMenuItem.separatorItem())
+        self._vision_item = self._add_item("Vision mode (screenshot context)", "toggleVision:")
+        self._vision_item.setState_(0)  # unchecked by default
+        self._menu.addItem_(NSMenuItem.separatorItem())
         self._add_item("Restart", "restart:", key="r")
         self._menu.addItem_(NSMenuItem.separatorItem())
         self._add_item("Open Server Log", "openServerLog:")
@@ -267,6 +272,26 @@ class AppDelegate(NSObject):
             self._item.setTitle_(ICON_ERROR)
             self._status_item.setTitle_("Both stopped — restarting…")
             threading.Thread(target=self._manager.restart, daemon=True).start()
+
+    def toggleVision_(self, sender):
+        self._manager.vision = not self._manager.vision
+        self._vision_item.setState_(1 if self._manager.vision else 0)
+        # Restart client with the new mode
+        self._status_item.setTitle_("Restarting client…")
+        threading.Thread(target=self._restart_client_only, daemon=True).start()
+
+    def _restart_client_only(self):
+        with self._manager._lock:
+            pid = self._manager._client_pid
+            self._manager._client_pid = None
+            self._manager._client_starting = False
+        if pid:
+            try:
+                os.kill(pid, 15)
+            except OSError:
+                pass
+        time.sleep(1.0)
+        self._manager._start_client()
 
     def restart_(self, sender):
         self._item.setTitle_(ICON_STARTING)
