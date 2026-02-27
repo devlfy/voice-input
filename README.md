@@ -22,10 +22,24 @@ Push-to-talk voice transcription and translation for macOS, with a floating HUD 
 - [Ollama](https://ollama.com) installed and running
 - Python 3.11+
 
-## Quick Install
+## Install
+
+### Option A — DMG (easiest)
+
+1. Download **VoiceInput.dmg** from the [Releases](https://github.com/devlfy/voice-input/releases) page
+2. Open the DMG
+3. Double-click **Install VoiceInput** — it installs everything automatically:
+   - Python virtual environment
+   - All Python dependencies
+   - Ollama models (`gemma3:4b` for refinement, `qwen2.5:7b` for translation)
+   - `VoiceInput.app` → `/Applications`
+
+> **Note:** [Ollama](https://ollama.com) must be installed first. The installer will open the Ollama website if it's missing.
+
+### Option B — Terminal
 
 ```bash
-git clone https://github.com/xuiltul/voice-input.git
+git clone https://github.com/devlfy/voice-input.git
 cd voice-input
 bash install.sh
 ```
@@ -36,6 +50,15 @@ The installer will:
 3. Pull the required Ollama models (`gemma3:4b`, `qwen2.5:7b`)
 4. Install `VoiceInput.app` to `/Applications`
 5. Print macOS permission setup steps
+
+### Build the DMG yourself
+
+```bash
+git clone https://github.com/devlfy/voice-input.git
+cd voice-input
+bash build_dmg.sh
+# → VoiceInput.dmg
+```
 
 ## macOS Permissions (required after install)
 
