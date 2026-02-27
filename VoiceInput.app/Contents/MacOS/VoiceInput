@@ -1,5 +1,7 @@
 #!/bin/bash
-REPO_DIR="/Users/laaf/voice-input"
+# Resolve repo dir from this script's location: VoiceInput.app/Contents/MacOS/ → ../../.. → repo
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 VENV_PYTHON="$REPO_DIR/.venv/bin/python3"
 
 if [ ! -f "$VENV_PYTHON" ]; then

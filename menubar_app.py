@@ -35,7 +35,7 @@ import AVFoundation
 # ---------------------------------------------------------------------------
 # Configuration — edit these or set env vars before launching
 # ---------------------------------------------------------------------------
-REPO_DIR = Path("/Users/laaf/voice-input")
+REPO_DIR = Path(__file__).resolve().parent
 VENV_PYTHON = REPO_DIR / ".venv" / "bin" / "python3"
 PYTHON = str(VENV_PYTHON) if VENV_PYTHON.exists() else sys.executable
 ARCH = "/usr/bin/arch"
