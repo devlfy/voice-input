@@ -41,7 +41,8 @@ from pynput import keyboard
 SAMPLE_RATE = 16000
 CHANNELS = 1
 DTYPE = "int16"
-HOTKEY = keyboard.Key.alt_l  # 左Optionキー
+HOTKEY = keyboard.Key.alt_l        # Left Option  → transcribe
+HOTKEY_TRANSLATE = keyboard.Key.alt_r  # Right Option → transcribe + translate to FR
 STREAM_INTERVAL = 2.0  # ストリーミングチャンク送信間隔（秒）
 MIN_AX_TEXT_LEN = 20   # AXテキスト抽出の最小文字数（これ未満ならVisionフォールバック）
 
@@ -54,11 +55,13 @@ import sys, threading, queue, time
 
 TEXTS = {
     "recording":         "\U0001f3a4 Recording...",
+    "recording_translate": "\U0001f3a4 Recording... \U0001f504 auto-translate",
     "screenshot":        "\U0001f4f7 Capturing...",
     "analyzing":         "\U0001f50d Analyzing...",
     "transcribing":      "\u270d\ufe0f Transcribing...",
     "partial":           "\u270d\ufe0f ",
     "refining":          "\U0001f4ad Refining...",
+    "translating":       "\U0001f504 Translating...",
     "matching_command":  "\u2318 Matching command...",
     "done":              "\u2705 Done!",
     "error":             "\u274c Error",
@@ -237,12 +240,12 @@ if __name__ == "__main__":
 
 
 class VoiceInputClient:
-    def __init__(self, server_url: str, language: str = "ja",
-                 model: str = "glm-flash-q8:32k", raw: bool = False,
+    def __init__(self, server_url: str, language: str | None = None,
+                 model: str = "gemma3:4b", raw: bool = False,
                  prompt: str | None = None, paste: bool = True,
                  use_screenshot: bool = True):
         self.server_url = server_url
-        self.language = language
+        self.language = language  # None = auto-detect
         self.model = model
         self.raw = raw
         self.prompt = prompt
@@ -259,20 +262,22 @@ class VoiceInputClient:
         self._overlay_script_path = None
         self._stream_timer = None
         self._ctrl_pressed = False
-        self._send_enter = True  # Alt only → Enter付き, Alt+Ctrl → Enterなし
+        self._send_enter = True      # Left ⌥ → Enter; Left ⌥+Ctrl → no Enter
+        self._translate_mode = False  # Right ⌥ → translate to French
 
     def start(self):
         """メインループを開始."""
         print(f"voice-input client")
         print(f"  Server:   {self.server_url}")
-        print(f"  Language: {self.language}")
+        print(f"  Language: {'auto-detect' if not self.language else self.language}")
         print(f"  Model:    {self.model}")
         print(f"  Paste:    {'clipboard+Cmd+V' if self.paste else 'clipboard only'}")
         print(f"  Screenshot: {'ON (context-aware)' if self.use_screenshot else 'OFF'}")
         print(f"")
-        print(f"  [左Alt長押し]        → 録音 → ペースト + Enter")
-        print(f"  [左Alt+Ctrl長押し]   → 録音 → ペーストのみ（Enterなし）")
-        print(f"  [Ctrl+C] → 終了")
+        print(f"  [Left ⌥]             → record → transcribe (auto language) → paste + Enter")
+        print(f"  [Left ⌥ + Ctrl]      → record → transcribe (auto language) → paste only")
+        print(f"  [Right ⌥]            → record → auto-translate (FR↔EN) → paste + Enter")
+        print(f"  [Ctrl+C] → quit")
         print()
 
         # ステータスオーバーレイを起動
@@ -439,6 +444,10 @@ class VoiceInputClient:
         if key == keyboard.Key.ctrl_l or key == keyboard.Key.ctrl_r:
             self._ctrl_pressed = True
         if key == HOTKEY and not self.recording:
+            self._translate_mode = False
+            self._start_recording()
+        elif key == HOTKEY_TRANSLATE and not self.recording:
+            self._translate_mode = True
             self._start_recording()
 
     def _on_key_release(self, key):
@@ -446,8 +455,10 @@ class VoiceInputClient:
         if key == keyboard.Key.ctrl_l or key == keyboard.Key.ctrl_r:
             self._ctrl_pressed = False
         if key == HOTKEY and self.recording:
-            # Alt離し時にCtrlが押されていればEnter送信しない
             self._send_enter = not self._ctrl_pressed
+            self._stop_recording()
+        elif key == HOTKEY_TRANSLATE and self.recording:
+            self._send_enter = True
             self._stop_recording()
 
     def _start_recording(self):
@@ -458,8 +469,37 @@ class VoiceInputClient:
 
         self.recording = True
         self.audio_chunks = []
-        print("  ● Recording...", end="", flush=True)
-        self._update_overlay("recording")
+        mode_label = " [TRANSLATE→FR]" if self._translate_mode else ""
+        print(f"  ● Recording...{mode_label}", end="", flush=True)
+        self._update_overlay("recording_translate" if self._translate_mode else "recording")
+
+        # If translate mode, send a config override using the translate_fr prompt file
+        # We pass language="translate_fr" — the server loads prompts/translate_fr.json
+        # which replaces the system prompt entirely with a translation instruction.
+        if self.ws and self._connected:
+            if self._translate_mode:
+                print("\n  [translate mode: → FR]", end="", flush=True)
+                override_msg = {
+                    "type": "config",
+                    "language": "translate_auto",
+                    "model": self.model,
+                    "raw": False,
+                    "prompt": None,
+                }
+            else:
+                override_msg = {
+                    "type": "config",
+                    "language": self.language,
+                    "model": self.model,
+                    "raw": self.raw,
+                    "prompt": self.prompt,
+                }
+            asyncio.run_coroutine_threadsafe(
+                self.ws.send(json.dumps(override_msg)),
+                self.loop,
+            )
+            # Give the server time to process the config before stream_start arrives
+            time.sleep(0.15)
 
         # stream_start送信（AXテキスト優先、不十分ならスクリーンショット）
         start_msg = {"type": "stream_start"}
@@ -573,7 +613,7 @@ class VoiceInputClient:
                 await self.ws.send(json.dumps({"type": "stream_end"}))
             asyncio.run_coroutine_threadsafe(_send_final(), self.loop)
             print(" → Sent.", end="", flush=True)
-            self._update_overlay("refining")
+            self._update_overlay("translating" if self._translate_mode else "refining")
         else:
             print(" ✗ Not connected")
             self._update_overlay("error", "\u2717 Not connected")
@@ -918,8 +958,8 @@ Usage:
         default=default_server,
         help=f"WebSocket server URL (default: {default_server})",
     )
-    parser.add_argument("-l", "--language", default="ja", help="Language (default: ja)")
-    parser.add_argument("-m", "--model", default="glm-flash-q8:32k", help="Ollama model")
+    parser.add_argument("-l", "--language", default=None, help="Language hint, e.g. en, fr (default: auto-detect)")
+    parser.add_argument("-m", "--model", default="gemma3:4b", help="Ollama model")
     parser.add_argument("--raw", action="store_true", help="Skip LLM refinement")
     parser.add_argument("-p", "--prompt", default=None, help="Custom refinement prompt")
     parser.add_argument(
