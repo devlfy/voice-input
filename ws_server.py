@@ -354,14 +354,27 @@ async def handle_stream_end(websocket, client_id: str):
             try:
                 loop = asyncio.get_event_loop()
                 t0 = time.time()
+                # For special prompt languages (e.g. "translate_fr"), don't pass
+                # the language to Whisper — let it auto-detect the spoken language.
+                whisper_lang = cfg.get("language")
+                if whisper_lang and (whisper_lang.startswith("translate_") or whisper_lang == "translate_auto"):
+                    whisper_lang = None
                 result = await loop.run_in_executor(
-                    None, lambda: transcribe(tmp_path, cfg.get("language"),
-                                             vad_filter=True)
+                    None, lambda: transcribe(tmp_path, whisper_lang, vad_filter=True)
                 )
                 transcribe_time = time.time() - t0
                 raw_text = result["raw_text"]
                 duration = result.get("duration", 0)
-                detected_lang = result.get("language", detected_lang)
+                whisper_lang = result.get("language", detected_lang)
+                cfg_lang = cfg.get("language", "") or ""
+                if cfg_lang == "translate_auto":
+                    # Bidirectional: French → English, anything else → French
+                    detected_lang = "translate_en" if whisper_lang == "fr" else "translate_fr"
+                    log.info(f"translate_auto: detected '{whisper_lang}' → using '{detected_lang}'")
+                elif cfg_lang.startswith("translate_"):
+                    detected_lang = cfg_lang
+                else:
+                    detected_lang = whisper_lang
                 log.info(f"Final transcribe (VAD, {rms_db:.1f} dB): "
                          f"{duration:.1f}s audio → "
                          f"{len(raw_text)} chars in {transcribe_time:.1f}s "
@@ -474,11 +487,14 @@ async def handle_stream_end(websocket, client_id: str):
         loop = asyncio.get_event_loop()
         t0 = time.time()
         try:
+            # Use dedicated translation model for translate modes
+            is_translate = detected_lang.startswith("translate_")
+            effective_model = "qwen2.5:7b" if is_translate else cfg.get("model", DEFAULT_MODEL)
             llm_result = await loop.run_in_executor(
                 None,
                 lambda: refine_with_llm(
                     raw_text,
-                    model=cfg.get("model", DEFAULT_MODEL),
+                    model=effective_model,
                     language=detected_lang,
                     custom_prompt=cfg.get("prompt"),
                     context_hint=context_hint if context_hint else None,

@@ -1,171 +1,123 @@
 # voice-input
 
-Local voice input with screen-aware context. Push-to-talk on Mac, transcribed by Whisper, refined by a local LLM.
+Push-to-talk voice transcription and translation for macOS, with a floating HUD overlay and a native menu bar app. Runs entirely on-device — no cloud, no API keys.
 
 **No cloud services. Your voice and screen data never leave your machine.**
 
 ## Features
 
-- **Push-to-talk** — Hold left Option key to record, release to transcribe and paste
-- **Real-time streaming** — Partial transcription shown during recording
-- **Screen-aware context** — Vision model reads your screen to improve accuracy
-- **LLM text refinement** — Removes filler words, adds punctuation, fixes recognition errors
-- **Multi-language** — Japanese, English, Chinese, Korean (auto-detected)
-- **Auto-paste + Enter** — Result pasted and submitted automatically (hold Ctrl to paste without Enter)
+- **Left ⌥ (Option)** — hold to record, release to transcribe and paste refined text
+- **Right ⌥ (Option)** — hold to record, release to auto-detect language and translate (FR ↔ EN)
+- Floating HUD overlay shows live status (Recording → Transcribing → Refining → Done)
+- Menu bar app — no Terminal needed after install
+- Runs on local models via [Ollama](https://ollama.com) — fully offline
+- French by default; auto-detects language for translation
+- Real-time partial transcription during recording
+- Screen-aware context via Vision model (optional)
 
-## Quick start (Mac, 16 GB)
+## Requirements
 
-Works on any Apple Silicon Mac with 16 GB unified memory. No separate server needed.
+- macOS with Apple Silicon (M1/M2/M3/M4)
+- [Homebrew](https://brew.sh)
+- [Ollama](https://ollama.com) installed and running
+- Python 3.11+
 
-### 1. Install prerequisites
-
-- [Python 3.11+](https://www.python.org/)
-- [Ollama](https://ollama.com/) — local LLM runtime
-
-### 2. Setup
+## Quick Install
 
 ```bash
-git clone https://github.com/xuiltul/voice-input
+git clone https://github.com/xuiltul/voice-input.git
 cd voice-input
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-ollama pull gemma3:4b
+bash install.sh
 ```
 
-### 3. Start
+The installer will:
+1. Create a Python virtual environment (`.venv`)
+2. Install all Python dependencies
+3. Pull the required Ollama models (`gemma3:4b`, `qwen2.5:7b`)
+4. Install `VoiceInput.app` to `/Applications`
+5. Print macOS permission setup steps
 
-Terminal 1 (server):
+## macOS Permissions (required after install)
 
-```bash
-WHISPER_MODEL=small LLM_MODEL=gemma3:4b .venv/bin/python ws_server.py
-```
+Open **System Settings** and grant the following to **Terminal**:
 
-Terminal 2 (client):
+| Permission | Path |
+|---|---|
+| Microphone | Privacy & Security → Microphone |
+| Accessibility | Privacy & Security → Accessibility |
 
-```bash
-.venv/bin/python mac_client.py --server ws://localhost:8991 --model gemma3:4b
-```
-
-### 4. Grant permissions
-
-System Settings > Privacy & Security:
-
-- **Microphone** → Terminal
-- **Accessibility** → Terminal
-- **Screen Recording** → Terminal
-
-### 5. Use it
-
-**Hold left Option** → speak → **release** → text is pasted.
-
-**Memory usage (~9 GB total):**
-
-| Component | Memory |
-|-----------|--------|
-| macOS | ~5 GB |
-| Whisper `small` (CPU, int8) | ~1 GB |
-| gemma3:4b (Ollama) | ~3 GB |
-
-> **32 GB+ Mac:** Use `WHISPER_MODEL=large-v3-turbo LLM_MODEL=qwen2.5:7b` for better accuracy. Add `ollama pull qwen3-vl:8b-instruct` and set `VISION_MODEL=qwen3-vl:8b-instruct` for screen-aware context.
-
-### Auto-start (optional)
-
-Wrap the client in an Automator app so macOS can grant permissions to it:
-
-1. Open **Automator.app** → **Application** → **Run Shell Script**:
-
-```bash
-cd ~/voice-input && /usr/bin/python3 mac_client.py --server ws://localhost:8991 --model gemma3:4b
-```
-
-2. Save as `~/Applications/VoiceInput.app`
-3. Grant permissions (Accessibility, Input Monitoring, Microphone, Screen Recording) to VoiceInput.app
-4. Add to **Login Items** for auto-start
-
-## Quick start (Linux + NVIDIA GPU)
-
-For faster inference with a dedicated GPU.
-
-```bash
-git clone https://github.com/xuiltul/voice-input
-cd voice-input
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-
-ollama pull gpt-oss:20b
-ollama pull qwen3-vl:8b-instruct  # optional: screen context
-
-# LD_LIBRARY_PATH required for pip-installed CUDA libs
-PYVER=$(.venv/bin/python -c 'import sys;print(f"python{sys.version_info.major}.{sys.version_info.minor}")')
-LD_LIBRARY_PATH=".venv/lib/$PYVER/site-packages/nvidia/cublas/lib:.venv/lib/$PYVER/site-packages/nvidia/cudnn/lib" \
-  .venv/bin/python ws_server.py
-```
-
-Mac client connects to the server:
-
-```bash
-pip3 install sounddevice numpy websockets pynput
-python3 mac_client.py --server ws://YOUR_SERVER_IP:8991
-```
+> These are one-time grants. The menu bar app launches the client through Terminal to inherit mic and accessibility permissions automatically.
 
 ## Usage
 
-### Push-to-talk
+### Menu bar app (recommended)
 
-| Action | Result |
-|--------|--------|
-| **Hold left Option** → speak → **release** | Transcribe → refine → paste + Enter |
-| **Hold left Option + Ctrl** → speak → **release** | Transcribe → refine → paste only (no Enter) |
+Open **VoiceInput** from `/Applications` or Spotlight. A microphone icon (🎙) appears in the menu bar.
 
-### Screen context
+| Shortcut | Action |
+|---|---|
+| Hold **Left ⌥**, speak, release | Transcribe → refine in French → paste |
+| Hold **Right ⌥**, speak, release | Auto-detect language → translate FR↔EN → paste |
 
-When you start recording, a screenshot is captured and analyzed by a vision model. If the analysis completes before you stop recording, the HUD turns **green** — the LLM will use your screen content to improve accuracy (e.g., technical terms visible on screen).
+Right-click the menu bar icon for: Restart, Open Server Log, Open Client Log, Quit.
 
-### Client options
+### Manual (without the menu bar app)
 
-```
-python3 mac_client.py [options]
-
-  -s, --server URL      WebSocket server (default: ws://localhost:8991)
-  -l, --language CODE   Language hint (default: ja)
-  -m, --model NAME      Ollama model for refinement
-  --raw                 Skip LLM refinement, Whisper output only
-  --no-screenshot       Disable screen context
+Terminal 1 — start the server:
+```bash
+cd voice-input
+LLM_API_FORMAT=ollama LLM_MODEL=gemma3:4b WHISPER_MODEL=small .venv/bin/python3 ws_server.py
 ```
 
-## Configuration
+Terminal 2 — start the client:
+```bash
+cd voice-input
+bash run_client.sh
+```
 
-### Environment variables
+## Models
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLM_MODEL` | `gpt-oss:20b` | Ollama model for text refinement |
-| `WHISPER_MODEL` | `large-v3-turbo` | Whisper model (`small`, `medium`, `large-v3-turbo`) |
-| `WHISPER_DEVICE` | `auto` | `auto` (CUDA if available, else CPU), `cuda`, `cpu` |
-| `WHISPER_COMPUTE_TYPE` | `default` | `float16` (CUDA) or `int8` (CPU) |
-| `VISION_MODEL` | `qwen3-vl:8b-instruct` | Vision model for screen context |
-| `VISION_SERVERS` | *(local Ollama)* | Remote Ollama URLs for vision (comma-separated) |
-| `DEFAULT_LANGUAGE` | `ja` | Default language |
+| Role | Model | Notes |
+|---|---|---|
+| Speech-to-text | Whisper `small` | Fast, ~1 GB RAM |
+| Text refinement | `gemma3:4b` | ~3 GB RAM |
+| Translation | `qwen2.5:7b` | ~5 GB RAM, used for Right ⌥ |
 
-### Recommended models by hardware
+You can substitute any Ollama-compatible model by editing environment variables in `run_client.sh` and `menubar_app.py`.
 
-| Hardware | Whisper | LLM | Vision | Total memory |
-|----------|---------|-----|--------|-------------|
-| Mac 16 GB | `small` | `gemma3:4b` | *(skip)* | ~9 GB |
-| Mac 32 GB | `large-v3-turbo` | `qwen2.5:7b` | `qwen3-vl:8b-instruct` | ~20 GB |
-| Linux GPU 24 GB | `large-v3-turbo` | `gpt-oss:20b` | *(remote)* | ~15 GB VRAM |
+### Recommended configs by hardware
 
-### Multi-language prompts
+| Hardware | Whisper | LLM | Total RAM |
+|---|---|---|---|
+| Mac 16 GB | `small` | `gemma3:4b` | ~9 GB |
+| Mac 32 GB | `large-v3-turbo` | `qwen2.5:7b` | ~15 GB |
 
-Refinement prompts are in `prompts/` as JSON:
+## Architecture
 
 ```
-prompts/
-├── ja.json    # Japanese (default)
-├── en.json    # English
-├── zh.json    # Chinese
-└── ko.json    # Korean
+VoiceInput.app (menu bar)
+    └── menubar_app.py          NSStatusBar menu, process management
+         ├── ws_server.py        WebSocket server (Whisper + Ollama)
+         └── mac_client.py       Audio capture, HUD overlay, hotkeys
+              └── run_client.sh  Env wrapper launched via Terminal for mic permission
 ```
+
+Audio pipeline:
+```
+Microphone → sounddevice → WebSocket → faster-whisper → Ollama LLM → clipboard → paste
+```
+
+## Prompts
+
+Language and translation prompts are in `prompts/`:
+
+| File | Purpose |
+|---|---|
+| `fr.json` | Refine transcription in French |
+| `en.json` | Refine transcription in English |
+| `translate_fr.json` | Translate any language → French |
+| `translate_en.json` | Translate any language → English |
+| `ja.json`, `zh.json`, `ko.json` | Additional languages |
 
 To add a new language, create `prompts/{code}.json`:
 
@@ -179,25 +131,66 @@ To add a new language, create `prompts/{code}.json`:
 }
 ```
 
-> **Prompt design note:** Keep the system prompt concise (~400 chars). Small models (7B-20B) with `think: "low"` degrade when the prompt is too long — they drop content instead of formatting it. Use max 2 few-shot examples.
+## Translation (Right ⌥)
 
-## Advanced
+The Right ⌥ shortcut uses auto-detection:
 
-<details>
-<summary>Docker</summary>
+- Speak in **French** → result pasted in **English**
+- Speak in **English** → result pasted in **French**
+
+Detection is done by Whisper. The translation model (`qwen2.5:7b`) handles the actual conversion.
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `LLM_MODEL` | `gemma3:4b` | Ollama model for text refinement |
+| `LLM_API_FORMAT` | `ollama` | Must be `ollama` for local inference |
+| `WHISPER_MODEL` | `small` | Whisper model size |
+| `WHISPER_DEVICE` | `auto` | `auto`, `cuda`, or `cpu` |
+| `DEFAULT_LANGUAGE` | `None` | Language hint (`fr`, `en`, etc.), or None for auto |
+
+## Troubleshooting
+
+**Menu bar icon stuck on ⏳**
+- Check that Terminal has Accessibility permission in System Settings
+- Try Restart from the menu bar menu
+- Make sure Ollama is running: `ollama serve`
+
+**No sound / microphone not working**
+- Terminal must have Microphone permission in System Settings
+- The menu bar app launches the client through Terminal automatically
+
+**Translation always goes one direction**
+- Right ⌥ auto-detects source language via Whisper
+- If Whisper misidentifies the language (can happen with short phrases), try speaking more
+
+**Slow responses**
+- Ensure `LLM_API_FORMAT=ollama` is set (done automatically via `run_client.sh`)
+- `qwen2.5:7b` needs ~5 GB RAM; close memory-intensive apps if needed
+
+## Linux / NVIDIA GPU
 
 ```bash
-docker build -t voice-input .
-docker run --gpus all -p 8991:8991 \
-  -e LLM_MODEL=gpt-oss:20b \
-  -v ollama-data:/root/.ollama \
-  voice-input
+git clone https://github.com/xuiltul/voice-input
+cd voice-input
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+ollama pull gemma3:4b
+
+# Start server with CUDA
+PYVER=$(.venv/bin/python -c 'import sys;print(f"python{sys.version_info.major}.{sys.version_info.minor}")')
+LD_LIBRARY_PATH=".venv/lib/$PYVER/site-packages/nvidia/cublas/lib:.venv/lib/$PYVER/site-packages/nvidia/cudnn/lib" \
+  LLM_API_FORMAT=ollama .venv/bin/python ws_server.py
 ```
 
-</details>
+Connect from Mac:
+```bash
+pip3 install sounddevice numpy websockets pynput
+python3 mac_client.py --server ws://YOUR_SERVER_IP:8991
+```
 
-<details>
-<summary>HTTP API</summary>
+## HTTP API
 
 ```bash
 # Transcribe + refine
@@ -210,103 +203,6 @@ curl -X POST "http://localhost:8990/transcribe?raw=true" \
   -H "Content-Type: audio/wav" \
   --data-binary @recording.wav
 ```
-
-Response:
-```json
-{
-  "text": "Refined text",
-  "raw_text": "Raw Whisper output",
-  "language": "ja",
-  "duration": 5.2,
-  "processing_time": { "transcribe": 0.3, "refine": 4.1 }
-}
-```
-
-</details>
-
-<details>
-<summary>Architecture</summary>
-
-| Component | Role |
-|-----------|------|
-| `voice_input.py` | Core pipeline: Whisper + Ollama LLM + Vision |
-| `ws_server.py` | WebSocket server (port 8991) |
-| `mac_client.py` | Push-to-talk client with HUD overlay |
-| `prompts/` | Language-specific refinement prompts |
-
-Whisper auto-detects CUDA/CPU. On CUDA, uses float16; on CPU, uses int8.
-
-</details>
-
-<details>
-<summary>Voice slash commands (Claude Code)</summary>
-
-Say "コマンド" followed by a command name to input a slash command:
-
-- 「コマンド ヘルプ」→ `/help`
-- 「コマンド コミット」→ `/commit`
-- "command compact" → `/compact`
-
-Commands auto-loaded from `~/.claude/skills/*/SKILL.md` at startup.
-
-</details>
-
-## Why?
-
-Cloud voice input sends your audio and screen to external servers. This tool runs everything locally — your data never leaves your machine.
-
----
-
-## 日本語ガイド
-
-### これは何？
-
-Macのプッシュトゥートークで音声入力し、Whisperで文字起こし、ローカルLLMで整形するツールです。クラウドサービス不要、音声もスクリーンデータもネットワーク外に出ません。
-
-### MacBook (16 GB) でのセットアップ
-
-**必要なもの:**
-- Apple Silicon Mac (M1/M2/M3/M4, 16 GB以上)
-- Python 3.11+
-- [Ollama](https://ollama.com/)
-
-**手順:**
-
-```bash
-# クローン＆セットアップ
-git clone https://github.com/xuiltul/voice-input
-cd voice-input
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-ollama pull gemma3:4b
-
-# サーバー起動（ターミナル1）
-WHISPER_MODEL=small LLM_MODEL=gemma3:4b .venv/bin/python ws_server.py
-
-# クライアント起動（ターミナル2）
-.venv/bin/python mac_client.py --server ws://localhost:8991 --model gemma3:4b
-```
-
-**macOSの権限設定** — システム設定 > プライバシーとセキュリティ:
-- マイク → Terminal
-- アクセシビリティ → Terminal
-- 画面収録 → Terminal
-
-### 使い方
-
-- **左Optionキーを押しながら話す** → 離すと文字起こし → 整形 → 自動ペースト＋Enter
-- **左Option + Ctrl を押しながら話す** → ペーストのみ（Enter送信なし）
-
-### メモリ使用量
-
-| コンポーネント | メモリ |
-|------------|--------|
-| macOS | ~5 GB |
-| Whisper small (CPU) | ~1 GB |
-| gemma3:4b (Ollama) | ~3 GB |
-| **合計** | **~9 GB** |
-
-32 GB以上のMacでは `WHISPER_MODEL=large-v3-turbo LLM_MODEL=qwen2.5:7b` でより高精度になります。
 
 ## License
 

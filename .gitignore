@@ -10,3 +10,6 @@ build/
 .env
 CLAUDE.md
 start.sh
+.DS_Store
+session.md
+export_session.py

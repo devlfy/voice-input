@@ -1,0 +1,14 @@
+#!/bin/bash
+REPO_DIR="/Users/laaf/voice-input"
+VENV_PYTHON="$REPO_DIR/.venv/bin/python3"
+
+if [ ! -f "$VENV_PYTHON" ]; then
+    osascript -e "display alert \"voice-input\" message \"Virtual environment not found at $REPO_DIR/.venv\" as critical"
+    exit 1
+fi
+
+export LLM_MODEL="${LLM_MODEL:-gemma3:4b}"
+export LLM_API_FORMAT="${LLM_API_FORMAT:-ollama}"
+export WHISPER_MODEL="${WHISPER_MODEL:-small}"
+
+exec /usr/bin/arch -arm64 "$VENV_PYTHON" "$REPO_DIR/menubar_app.py"
